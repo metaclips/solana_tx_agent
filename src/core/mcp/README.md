@@ -1,4 +1,4 @@
-# src/mcp
+# src/core/mcp
 
 MCP boundary implementation using `modelcontextprotocol/rust-sdk` via the `rmcp` crate.
 

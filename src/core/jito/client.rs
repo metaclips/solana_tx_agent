@@ -23,7 +23,7 @@ use tonic::{
 };
 use tracing::{error, info, warn};
 
-use crate::jito::{
+use crate::core::jito::{
     protos::{
         auth::auth_service_client::AuthServiceClient,
         bundle::{Bundle, BundleResult, bundle_result},
@@ -37,8 +37,9 @@ use crate::jito::{
     tip::TipData,
 };
 
-type SearcherClient =
-    SearcherServiceClient<InterceptedService<Channel, crate::jito::interceptor::ClientInterceptor>>;
+type SearcherClient = SearcherServiceClient<
+    InterceptedService<Channel, crate::core::jito::interceptor::ClientInterceptor>,
+>;
 
 const MAX_RETRIES: usize = 5;
 const MAX_RATE_LIMIT_RETRIES: usize = 5;
@@ -93,7 +94,7 @@ pub struct JitoClient {
 impl JitoClient {
     pub async fn connect(config: JitoConfig, auth_keypair: Arc<Keypair>) -> anyhow::Result<Self> {
         let engine_connect = Self::grpc_connect(&config.block_engine_url).await?;
-        let interceptor = crate::jito::interceptor::ClientInterceptor::new(
+        let interceptor = crate::core::jito::interceptor::ClientInterceptor::new(
             auth_keypair,
             AuthServiceClient::new(engine_connect.clone()),
         )
@@ -105,7 +106,7 @@ impl JitoClient {
             .await?
             .into_inner();
 
-        let mut tip_stream = crate::jito::tip::new_jito_tip_stream().await;
+        let mut tip_stream = crate::core::jito::tip::new_jito_tip_stream().await;
         let tip = Self::fetch_tip_data(&mut tip_stream).await?;
         let tip_accounts = Self::fetch_tip_accounts_with_fallback(&mut searcher).await;
 
@@ -242,7 +243,7 @@ impl JitoClient {
             Ok(None) => anyhow::bail!("Jito tip stream closed before first tip"),
             Err(err) => {
                 warn!("Jito tip stream timed out, using HTTP fallback: {err:?}");
-                crate::jito::tip::get_tip_data_via_reqwest().await
+                crate::core::jito::tip::get_tip_data_via_reqwest().await
             }
         }
     }

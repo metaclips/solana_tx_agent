@@ -19,13 +19,13 @@ The MCP server and client are implemented with the official `modelcontextprotoco
 
 ### Config
 
-Module: `src/config.rs`
+Module: `src/core/config.rs`
 
 Reads RPC, Yellowstone, Jito auth, logging, tip, and AI settings from environment variables.
 
 ### MCP Server
 
-Implementation: `src/mcp/server.rs`
+Implementation: `src/core/mcp/server.rs`
 
 Launcher: `src/bin/agent_mcp.rs`
 
@@ -53,7 +53,7 @@ The `submit_signed_bundle` tool accepts a submission ID, attempt number, encoded
 
 ### MCP Client / Agent Host
 
-Implementation: `src/mcp/host.rs`
+Implementation: `src/ai/mcp_host.rs`
 
 Launcher: `src/bin/agent_host.rs`
 
@@ -70,7 +70,7 @@ Responsibilities:
 
 ### Yellowstone/Geyser Stream
 
-Module: `src/networking/geyser.rs`
+Module: `src/core/networking/geyser.rs`
 
 Responsibilities:
 
@@ -81,7 +81,7 @@ Responsibilities:
 
 ### Jito Client
 
-Module: `src/jito/client.rs`
+Module: `src/core/jito/client.rs`
 
 Responsibilities:
 
@@ -95,7 +95,7 @@ Responsibilities:
 
 ### Lifecycle Tracker
 
-Module: `src/lifecycle.rs`
+Module: `src/core/lifecycle.rs`
 
 Records:
 
@@ -109,7 +109,7 @@ The output is JSONL for simple auditability.
 
 ### AI Agent
 
-Module: `src/agent/mod.rs`
+Module: `src/ai/agent/mod.rs`
 
 Decision owned by the agent: when and how to submit or retry.
 
@@ -135,7 +135,7 @@ If `OPENAI_API_KEY` is set, the agent calls an OpenAI-compatible chat-completion
 
 ### Policy Engine
 
-Module: `src/policy.rs`
+Module: `src/ai/policy.rs`
 
 The policy engine validates agent output before any write tool executes:
 

@@ -1,4 +1,4 @@
-# src/jito
+# src/core/jito
 
 Jito block-engine integration.
 

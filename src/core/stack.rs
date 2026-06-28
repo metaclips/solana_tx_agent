@@ -15,7 +15,7 @@ use solana_sdk::{hash::Hash, signature::Signature, transaction::VersionedTransac
 use tokio::sync::RwLock;
 use tracing::warn;
 
-use crate::{
+use crate::core::{
     config::Config,
     jito::{
         client::{BundleEvent, JitoClient, JitoConfig},

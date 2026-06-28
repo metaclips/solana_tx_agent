@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{config::Config, jito::tip::TipData, lifecycle::FailureKind};
+use crate::core::{config::Config, jito::tip::TipData, lifecycle::FailureKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

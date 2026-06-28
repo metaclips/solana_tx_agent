@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{agent::OperationalDecision, config::Config};
+use crate::{ai::agent::OperationalDecision, core::config::Config};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyLimits {

@@ -1,4 +1,4 @@
-# src/networking
+# src/core/networking
 
 Yellowstone/Geyser streaming integration.
 

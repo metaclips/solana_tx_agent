@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use crate::{
+use crate::core::{
     config::Config,
     lifecycle::{AgentAuditRecord, FailureKind},
     stack::{ControlledSignedSubmitRequest, SignedTransactionEncoding, TxStack},

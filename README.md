@@ -1,26 +1,220 @@
-# tx_agent
+# tx_agent: Generate Report, Start MCP, Run Agent
 
 Smart Solana transaction infrastructure prototype for the hackathon bounty. It combines Yellowstone/Geyser slot and signature-status streams, Jito bundle submission, live Jito tip data, lifecycle logging, and an AI-owned operational decision.
 
-The project is MCP-based:
+## Quick Start
 
-- `agent_mcp` is the infrastructure control plane. It owns RPC, Yellowstone, Jito auth, bundle submission, lifecycle tracking, and failure classification.
-- `agent_host` is the MCP client and agent host. It receives an already signed encoded transaction, queries MCP tools for live state, asks the LLM for one operational decision, validates that decision locally, and only then calls MCP write tools.
-- The agent never signs transactions, mutates transaction fields, sees private keys, or directly calls Solana/Jito. If the signed transaction needs a fresh blockhash or higher embedded tip, the agent escalates for a new signed transaction.
+Generate the hackathon JSON report with 10 live submissions, including at least 2 expected failure cases:
 
-The MCP implementation uses the official [`modelcontextprotocol/rust-sdk`](https://github.com/modelcontextprotocol/rust-sdk), published as the `rmcp` crate.
+```sh
+cargo build --bins
 
-## What It Does
+target/debug/hackathon_report \
+  --rpc-url "$SOLANA_RPC_URL" \
+  --yellowstone-endpoint "$YELLOWSTONE_ENDPOINT" \
+  --jito-auth-keypair "$JITO_AUTH_KEYPAIR" \
+  --payer-keypair "$TX_AGENT_REAL_PAYER_KEYPAIR" \
+  --out reports/hackathon_report.json
+```
 
-- Streams live slots and blockhashes from Yellowstone/Geyser.
-- Fetches Jito connected leader windows and waits for a near leader before submission.
-- Accepts a pre-signed base64 or base58 Solana transaction from the agent host.
-- Verifies and submits the signed transaction as a Jito bundle.
-- Tracks bundle events from Jito and signature status from Yellowstone.
-- Uses RPC commitment checks as fallback/corroboration, not as the only lifecycle source.
-- Logs submitted, accepted, processed, confirmed, finalized, failure, latency, slot, and tip data to JSONL.
-- Lets the AI agent decide submit, wait, retry, abandon, or escalate after failure.
-- Exposes controlled MCP tools for live state, failure classification, bundle submission, and agent-decision audit logging.
+Start the MCP control-plane server:
+
+```sh
+cargo run --bin agent_mcp -- --bind 127.0.0.1:8080
+```
+
+Run the agent host against a pre-signed transaction:
+
+```sh
+cargo run --bin agent_host -- \
+  --mcp-url http://127.0.0.1:8080/mcp \
+  --request-id demo-001 \
+  --encoding base64 \
+  --transaction-file signed-tx.base64 \
+  --observed-tip-lamports 1000
+```
+
+> [!IMPORTANT]
+> `hackathon_report` performs real Jito bundle submissions. Use a funded payer keypair only when you intend to spend fees/tips on live infrastructure.
+
+## Architecture Document
+
+The hackathon requires a public architecture document hosted separately from this GitHub repository.
+
+Public architecture document: **TODO: replace with your public Figma, Notion, Google Docs, or other public URL before submission.**
+
+That external document should cover:
+
+- System architecture
+- Key components
+- Data flow between services
+- Infrastructure decisions
+- Failure handling strategy
+- AI agent responsibilities
+- Diagrams and deployment notes
+
+The repository implementation is summarized below, but the externally hosted document is the separately judged architecture submission.
+
+## System Overview
+
+```mermaid
+flowchart LR
+    Signer[Upstream Signer<br/>funded keypair or external signing stack]
+    Host[agent_host<br/>AI client host]
+    MCP[agent_mcp<br/>MCP control plane]
+    Stack[TxStack<br/>core lifecycle stack]
+    Jito[Jito Block Engine<br/>bundle submission/results]
+    Geyser[Yellowstone/Geyser<br/>slots + signature status]
+    RPC[Solana RPC<br/>commitment fallback]
+    Logs[(Lifecycle JSONL<br/>Agent audit JSONL)]
+    Report[(hackathon_report.json)]
+
+    Signer -->|pre-signed base64/base58 tx| Host
+    Host -->|get_network_state| MCP
+    Host -->|submit_signed_bundle| MCP
+    MCP --> Stack
+    Stack -->|send_bundle| Jito
+    Jito -->|accepted/dropped/finalized events| Stack
+    Geyser -->|slots/blockhash/status| Stack
+    RPC -->|processed/confirmed/finalized status fallback| Stack
+    Stack --> Logs
+    Logs --> Report
+```
+
+The project separates core infrastructure from AI orchestration:
+
+| Area | Path | Responsibility |
+| --- | --- | --- |
+| Core stack | `src/core` | RPC, Yellowstone, Jito, lifecycle logging, MCP server |
+| AI layer | `src/ai` | Operational decision policy, AI host, MCP client |
+| Binaries | `src/bin` | `agent_mcp`, `agent_host`, `hackathon_report` |
+
+## Key Components
+
+| Component | Role |
+| --- | --- |
+| `agent_mcp` | Long-running MCP streamable HTTP server at `/mcp`. Owns live infrastructure and controlled write tools. |
+| `agent_host` | MCP client and AI host. Receives an already signed transaction, queries live state, validates the decision, then calls MCP tools. |
+| `TxStack` | Verifies signed transactions, submits Jito bundles, tracks lifecycle, and writes JSONL records. |
+| `JitoClient` | Connects to the Jito block engine, fetches leader windows, submits bundles, and receives bundle events. |
+| `Geyser` | Streams live slots, blockhashes, and signature status from Yellowstone/Geyser. |
+| `hackathon_report` | Starts the MCP server, generates live transaction cases, runs the agent, and writes the final JSON report. |
+
+## Data Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as Upstream Signer / Report Generator
+    participant H as agent_host
+    participant M as agent_mcp
+    participant T as TxStack
+    participant J as Jito
+    participant G as Yellowstone/Geyser
+    participant R as Solana RPC
+    participant L as Lifecycle Log
+
+    S->>H: signed transaction + observed tip
+    H->>M: get_network_state
+    M->>T: read live state
+    T-->>M: slot, leader window, tips, limits
+    M-->>H: network state
+    H->>H: AI/fallback decision + policy validation
+    H->>M: submit_signed_bundle
+    M->>T: verify and submit unchanged tx
+    T->>J: send_bundle
+    J-->>T: bundle id / bundle result events
+    G-->>T: slot + signature status stream
+    R-->>T: commitment status fallback
+    T->>L: lifecycle JSONL entry
+    M-->>H: lifecycle record + failure report
+```
+
+## Infrastructure Decisions
+
+- The agent never signs transactions, mutates instructions, refreshes blockhashes, or changes embedded tips.
+- `agent_mcp` owns all Solana/Jito network access so the write surface is narrow and auditable.
+- Yellowstone/Geyser is the primary live signal for slots and signature status.
+- RPC commitment checks are used as corroborating fallback, not as the only lifecycle source.
+- Lifecycle records are append-only JSONL so the raw evidence is easy to inspect and preserve.
+- `hackathon_report` embeds the raw lifecycle records into a final JSON report for judging.
+
+## Failure Handling Strategy
+
+```mermaid
+flowchart TD
+    Fail[Failure observed] --> Classify[Classify raw Solana/Jito detail]
+    Classify --> Expired[Expired blockhash]
+    Classify --> Fee[Fee too low / underbid]
+    Classify --> Compute[Compute or simulation failure]
+    Classify --> Rate[Jito rate limit]
+    Classify --> Timeout[Timeout / inconclusive]
+
+    Expired --> Escalate[Escalate for a newly signed transaction]
+    Fee --> EscalateTip[Escalate for new signed transaction with higher embedded tip]
+    Compute --> Abandon[Abandon transaction shape]
+    Rate --> Wait[Wait for leader/tip data before retrying]
+    Timeout --> Wait
+```
+
+The signature boundary controls recovery. If a blockhash expires or a higher tip is required, this agent cannot repair the transaction in-place. It must escalate to an upstream signer for a new signed payload.
+
+## AI Agent Responsibilities
+
+The AI/fallback agent can decide:
+
+- `submit_now`
+- `wait_for_leader`
+- `retry`
+- `abandon`
+- `escalate`
+
+The policy layer clamps or rejects unsafe decisions. The agent cannot:
+
+- Access private keys
+- Sign transactions
+- Mutate transaction instructions
+- Refresh blockhashes
+- Increase embedded tips
+- Call Solana or Jito directly
+
+## Lifecycle Log And Hackathon Report
+
+Each lifecycle JSONL record includes:
+
+- `submission_id`
+- `attempt`
+- `bundle_id`
+- `signature`
+- `tip_lamports`
+- Submitted, processed, confirmed, and finalized timestamps
+- Submitted, processed, confirmed, and finalized slots where available
+- Latency deltas in milliseconds
+- Failure classification and raw failure detail
+- Ordered stage events
+
+The final report is written by `hackathon_report`:
+
+```sh
+target/debug/hackathon_report \
+  --rpc-url "$SOLANA_RPC_URL" \
+  --yellowstone-endpoint "$YELLOWSTONE_ENDPOINT" \
+  --jito-auth-keypair "$JITO_AUTH_KEYPAIR" \
+  --payer-keypair "$TX_AGENT_REAL_PAYER_KEYPAIR" \
+  --out reports/hackathon_report.json
+```
+
+Report fields relevant to judging:
+
+| Requirement | JSON location |
+| --- | --- |
+| 10 real submissions | `summary.total_submissions` |
+| At least 2 failures | `summary.observed_failures` |
+| Slot numbers | `submissions[].validation.slot_numbers` and `submissions[].lifecycle` |
+| Commitment progression | `submissions[].validation.commitment_progression` and `submissions[].lifecycle.events` |
+| Timestamps | `transaction.constructed_at`, `agent.started_at`, `agent.finished_at`, lifecycle timestamps |
+| Tip amounts | `submissions[].transaction.tip_lamports`, lifecycle `tip_lamports` |
+| Failure classification | `submissions[].validation.failure_classification`, lifecycle `failure` |
 
 ## Setup
 
@@ -31,6 +225,7 @@ export YELLOWSTONE_ENDPOINT="https://your-yellowstone-endpoint"
 export YELLOWSTONE_TOKEN="optional-token"
 export SOLANA_RPC_URL="https://your-rpc"
 export JITO_AUTH_KEYPAIR="$HOME/.config/solana/jito-auth.json"
+export TX_AGENT_REAL_PAYER_KEYPAIR="$HOME/.config/solana/funded-payer.json"
 ```
 
 Optional environment:
@@ -50,74 +245,36 @@ export MCP_BIND_ADDR="127.0.0.1:8080"
 export MCP_SERVER_URL="http://127.0.0.1:8080/mcp"
 ```
 
-The upstream signer must produce a funded, signed transaction that already contains any desired Jito tip instruction. This project does not accept `PAYER_KEYPAIR` and does not sign or mutate transactions.
-
-## Commands
-
-MCP control-plane demo:
-
-```sh
-cargo run --bin agent_mcp -- --bind 127.0.0.1:8080
-```
-
-In another shell:
-
-```sh
-cargo run --bin agent_host -- \
-  --mcp-url http://127.0.0.1:8080/mcp \
-  --request-id demo-001 \
-  --encoding base64 \
-  --transaction-file signed-tx.base64 \
-  --observed-tip-lamports 1000
-```
-
-`agent_mcp` is a long-running MCP streamable HTTP server at `/mcp`. `agent_host` is a CLI MCP client that connects to that server; it does not start the server process.
-
-For the MCP signed-transaction path, failure handling is constrained by the signature boundary. The server produces the failure report; the client-hosted agent decides whether to wait, retry the same signed payload while still valid, abandon, or escalate for a newly signed transaction. The policy engine validates the decision before the client calls `submit_signed_bundle`.
-
-## Lifecycle Log
-
-Each JSONL entry includes:
-
-- `submission_id`
-- `attempt`
-- `bundle_id`
-- `signature`
-- `tip_lamports`
-- submitted, processed, confirmed, finalized timestamps
-- submitted, processed, confirmed, finalized slots where available
-- latency deltas in milliseconds
-- failure classification and raw detail
-- ordered stage events
-
-Agent decisions are additionally written to `agent_decisions.log.jsonl` next to the lifecycle log. Each entry contains input state, selected action, policy limits, and final outcome.
-
-## Required README Questions
-
-### 1. What does the delta between `processed_at` and `confirmed_at` tell you about network health at the time of submission?
-
-The delta shows how long it took for a transaction that entered a leader-produced block at processed commitment to receive enough voting lockout to become confirmed. A small delta usually means healthy propagation and voting. A widening delta points to congestion, slow shred propagation, voting lag, fork pressure, or overloaded RPC/stream infrastructure.
-
-### 2. Why should you never use finalized commitment when fetching a blockhash for a time-sensitive transaction?
-
-Finalized blockhashes are too old for latency-sensitive flow. A transaction blockhash has a limited lifetime, and finalized commitment waits for much deeper consensus than processed or confirmed. Fetching at finalized burns useful blockhash lifetime before the transaction is even built, increasing expiry risk.
-
-### 3. What happens to your bundle if the Jito leader skips their slot?
-
-If the connected Jito leader skips the slot, the bundle does not land in that leader's block. Depending on timing and validity, Jito may emit dropped/not-finalized behavior, or the transaction may simply age until its blockhash expires. The sender must detect this and decide whether to refresh the blockhash, adjust tip, and resubmit for a later leader window.
-
-## Notes
-
-This repo intentionally does not import the arbitrage-specific route builder from `arbitrage-rs`. It reuses the useful infrastructure shape: Jito protobufs/auth/tip stream, leader lookup, and Yellowstone streaming. The transaction itself is generic so the bounty stack can be demonstrated without a profitable arbitrage path.
-
 ## MCP Tools
 
 The MCP server exposes:
 
 - `get_network_state`: current slot, latest streamed blockhash slot, nearest Jito leader, recent tips, and policy limits.
 - `get_recent_tip_data`: recent Jito tip percentiles.
-- `classify_failure`: maps raw errors into the failure taxonomy.
-- `submit_signed_bundle`: controlled write tool. The server verifies an encoded pre-signed transaction, submits it unchanged as a Jito bundle, tracks lifecycle, classifies failures, and logs the outcome.
-- `record_agent_decision`: appends the agent's input state, decision, validation policy, and outcome.
+- `classify_failure`: maps raw Solana/Jito errors into the failure taxonomy.
+- `submit_signed_bundle`: verifies an encoded pre-signed transaction, submits it unchanged as a Jito bundle, tracks lifecycle, classifies failures, and logs the outcome.
+- `record_agent_decision`: appends the agent input state, decision, validation policy, and outcome.
 
-The write surface is intentionally narrow. In the signed transaction flow, the agent can select timing, retry, abandon, or escalate behavior, but it cannot refresh blockhashes, adjust embedded tips, alter arbitrary instructions, or access signing material.
+## README Questions
+
+### Question 1: What does the delta between `processed_at` and `confirmed_at` tell you about network health at the time of submission?
+
+The delta measures how long it took after the transaction first appeared at processed commitment for enough stake-weighted voting to confirm it. A small delta usually means the leader produced the block, shreds propagated quickly, validators voted promptly, and the RPC/Geyser view was healthy. A widening delta points to network stress: slow shred propagation, voting lag, fork pressure, overloaded RPC infrastructure, or congestion that delays confirmation even after a transaction is first observed.
+
+In this stack, that delta is useful because `processed_at` is the earliest practical landing signal, while `confirmed_at` is the stronger signal that the cluster is converging on that block. The report preserves both timestamps and slot numbers so the delta can be compared across submissions in the same run.
+
+### Question 2: Why should you never use finalized commitment when fetching a blockhash for a time-sensitive transaction?
+
+Finalized commitment is too old for latency-sensitive submission. A Solana transaction blockhash has a limited lifetime. Fetching a finalized blockhash waits for deep consensus before the transaction is even built, which wastes part of the validity window and increases the chance that the transaction expires before it reaches a leader.
+
+For Jito bundle flow, that is especially harmful because the sender may wait for a connected leader window. Using a fresh processed or confirmed blockhash preserves more lifetime for signing, routing, bundle forwarding, and leader execution.
+
+### Question 3: What happens to your bundle if the Jito leader skips their slot?
+
+If the targeted Jito leader skips its slot, the bundle cannot land in that leader's block because no block was produced for that opportunity. Depending on timing and blockhash lifetime, the bundle may be dropped, remain unlanded until it expires, or need to be resent for a later leader window.
+
+This stack treats that as an operational failure path. It records the slot and bundle lifecycle evidence, classifies any returned Jito/Solana failure detail, and lets the agent decide whether to wait, retry the same still-valid signed payload, abandon, or escalate for a new signed transaction with a fresh blockhash and possibly a different tip.
+
+## Notes
+
+This repo intentionally does not import the arbitrage-specific route builder from `arbitrage-rs`. It reuses the useful infrastructure shape: Jito protobufs/auth/tip stream, leader lookup, Yellowstone streaming, lifecycle logging, and bounded agent orchestration. The transaction itself is generic so the stack can be demonstrated without a profitable arbitrage path.

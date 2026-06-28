@@ -1,11 +1,15 @@
 use std::{path::PathBuf, time::Duration};
 
 use crate::{
-    agent::{AgentFailureReport, AiAgent, OperationalAction, OperationalContext},
-    config::Config,
-    lifecycle::{AgentAuditRecord, LifecycleRecord},
-    policy::{PolicyLimits, ValidatedDecision, validate_decision},
-    stack::{FailureReport, NetworkState},
+    ai::{
+        agent::{AgentFailureReport, AiAgent, OperationalAction, OperationalContext},
+        policy::{PolicyLimits, ValidatedDecision, validate_decision},
+    },
+    core::{
+        config::Config,
+        lifecycle::{AgentAuditRecord, LifecycleRecord},
+        stack::{FailureReport, NetworkState},
+    },
 };
 use anyhow::Context;
 use chrono::Utc;
@@ -198,7 +202,7 @@ async fn record_decision<S>(
     request_id: &str,
     attempt: u32,
     context: &OperationalContext,
-    decision: &crate::agent::OperationalDecision,
+    decision: &crate::ai::agent::OperationalDecision,
     limits: &PolicyLimits,
     outcome: Option<Value>,
 ) -> anyhow::Result<()>

@@ -1,4 +1,4 @@
-# src/agent
+# src/ai/agent
 
 AI-assisted operational decision layer.
 
