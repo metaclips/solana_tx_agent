@@ -2,9 +2,15 @@
 
 Live Solana transaction control plane for Jito bundle submission, lifecycle tracking, and failure reporting. It combines Yellowstone/Geyser slot and signature-status streams, live Jito tip data, controlled MCP tooling, and a bounded operational decision layer.
 
+Built for the [Superteam Advanced Infrastructure Challenge: Build a Smart Transaction Stack](https://superteam.fun/earn/listing/advanced-infrastructure-challenge-build-a-smart-transaction-stack).
+
 ## Quick Start
 
-Generate the JSON report with 10 live submissions, including at least 2 expected failure cases:
+There are two ways to run the stack, depending on what you want to demonstrate.
+
+### Example 1: Generate The Report
+
+Use this path to produce the JSON evidence file with 10 live submissions, including at least 2 expected failure cases:
 
 ```sh
 cargo build --bins
@@ -17,13 +23,17 @@ target/debug/hackathon_report \
   --out reports/hackathon_report.json
 ```
 
-Start the MCP control-plane server:
+### Example 2: Run MCP Server And Client Manually
+
+Use this path to run the control plane and submit a pre-signed transaction through the client host.
+
+Start the MCP control-plane server in one shell:
 
 ```sh
 cargo run --bin agent_mcp -- --bind 127.0.0.1:8080
 ```
 
-Run the agent host against a pre-signed transaction:
+Run the client host against a pre-signed transaction in another shell:
 
 ```sh
 cargo run --bin agent_host -- \
@@ -33,6 +43,47 @@ cargo run --bin agent_host -- \
   --transaction-file signed-tx.base64 \
   --observed-tip-lamports 1000
 ```
+
+## CLI Flags
+
+### `hackathon_report`
+
+| Flag | Meaning |
+| --- | --- |
+| `--rpc-url` | Solana RPC endpoint used to fetch fresh blockhashes and query transaction commitment. Can also be set with `SOLANA_RPC_URL`. |
+| `--yellowstone-endpoint` | Yellowstone/Geyser gRPC endpoint used for live slots, blockhashes, and signature status. Can also be set with `YELLOWSTONE_ENDPOINT`. |
+| `--jito-auth-keypair` | Path to the Jito auth keypair used by the MCP server when connecting to the block engine. Can also be set with `JITO_AUTH_KEYPAIR`. |
+| `--payer-keypair` | Path to a funded payer keypair used by the report generator to build the successful live transaction cases. Can also be set with `TX_AGENT_REAL_PAYER_KEYPAIR`. |
+| `--out` | Path where the final JSON report is written. Defaults to `hackathon_report.json`. |
+| `--work-dir` | Directory for generated signed transaction files, lifecycle JSONL, and MCP server logs. Defaults to a temp directory. |
+| `--request-prefix` | Prefix used for generated submission IDs in the report and lifecycle log. |
+| `--success-count` | Number of expected-success submissions to generate. Defaults to `8`. |
+| `--failure-count` | Number of expected-failure submissions to generate. Defaults to `2`; must be at least `2`. |
+| `--tip-lamports` | Tip amount, in lamports, used when generating report transactions and recorded in lifecycle metadata. Defaults to `1000`. |
+| `--tip-account` | Jito tip account used in generated transfer transactions. Defaults to the built-in Jito tip account. |
+| `--bind` | Local address used for the MCP server started by the report generator. Defaults to `127.0.0.1:18080`. |
+| `--confirmation-timeout-secs` | How long the stack waits for processed/confirmed/finalized evidence before classifying a timeout. |
+| `--leader-lookahead-slots` | How close a connected Jito leader must be before a leader-aware submission proceeds. |
+| `--max-agent-wait-slots` | Maximum wait window allowed by policy for the client decision loop. |
+| `--server-ready-timeout-secs` | How long the report generator waits for `agent_mcp` to open its local port. |
+| `--submission-timeout-secs` | Per-submission timeout for the `agent_host` process. |
+
+### `agent_mcp`
+
+| Flag | Meaning |
+| --- | --- |
+| `--bind` | Address where the MCP streamable HTTP server listens, for example `127.0.0.1:8080`. |
+
+### `agent_host`
+
+| Flag | Meaning |
+| --- | --- |
+| `--mcp-url` | MCP server URL, usually `http://127.0.0.1:8080/mcp`. Can also be set with `MCP_SERVER_URL`. |
+| `--request-id` | Stable submission identifier written to lifecycle logs and decision audit logs. |
+| `--encoding` | Encoding of the signed transaction payload. Supported values are `base64` and `base58`. |
+| `--transaction-file` | Path to a file containing the already signed encoded transaction. Use this or `--encoded-transaction`, not both. |
+| `--encoded-transaction` | Inline already signed encoded transaction string. Use this or `--transaction-file`, not both. |
+| `--observed-tip-lamports` | Metadata telling the stack how many lamports of Jito tip the already-signed transaction is expected to contain. The stack records this value but does not modify the transaction. |
 
 > [!IMPORTANT]
 > `hackathon_report` performs real Jito bundle submissions. Use a funded payer keypair only when you intend to spend fees/tips on live infrastructure.
