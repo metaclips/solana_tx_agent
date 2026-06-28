@@ -94,6 +94,22 @@ struct RecordAgentDecisionParams {
     outcome: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+struct ClassifyFailureOutput {
+    failure: FailureKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+struct SubmitSignedBundleOutput {
+    record: crate::core::lifecycle::LifecycleRecord,
+    failure_report: Option<crate::core::stack::FailureReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+struct RecordAgentDecisionOutput {
+    ok: bool,
+}
+
 impl From<RecordAgentDecisionParams> for AgentAuditRecord {
     fn from(value: RecordAgentDecisionParams) -> Self {
         Self {
@@ -116,20 +132,16 @@ impl SolanaControlPlane {
     async fn get_network_state(
         &self,
         _params: Parameters<EmptyParams>,
-    ) -> Result<Json<serde_json::Value>, String> {
-        serde_json::to_value(self.stack.operational_state().await)
-            .map(Json)
-            .map_err(|err| err.to_string())
+    ) -> Result<Json<crate::core::stack::NetworkState>, String> {
+        Ok(Json(self.stack.operational_state().await))
     }
 
     #[tool(description = "Return recent Jito tip percentile data only.")]
     async fn get_recent_tip_data(
         &self,
         _params: Parameters<EmptyParams>,
-    ) -> Result<Json<serde_json::Value>, String> {
-        serde_json::to_value(self.stack.operational_state().await.recent_tip)
-            .map(Json)
-            .map_err(|err| err.to_string())
+    ) -> Result<Json<crate::core::jito::tip::TipData>, String> {
+        Ok(Json(self.stack.operational_state().await.recent_tip))
     }
 
     #[tool(
@@ -138,10 +150,10 @@ impl SolanaControlPlane {
     async fn classify_failure(
         &self,
         Parameters(params): Parameters<ClassifyFailureParams>,
-    ) -> Result<Json<serde_json::Value>, String> {
-        serde_json::to_value(FailureKind::classify(&params.detail))
-            .map(Json)
-            .map_err(|err| err.to_string())
+    ) -> Result<Json<ClassifyFailureOutput>, String> {
+        Ok(Json(ClassifyFailureOutput {
+            failure: FailureKind::classify(&params.detail),
+        }))
     }
 
     #[tool(
@@ -150,7 +162,7 @@ impl SolanaControlPlane {
     async fn submit_signed_bundle(
         &self,
         Parameters(params): Parameters<SubmitSignedBundleParams>,
-    ) -> Result<Json<serde_json::Value>, String> {
+    ) -> Result<Json<SubmitSignedBundleOutput>, String> {
         let record = self
             .stack
             .submit_signed_encoded(params.into())
@@ -161,10 +173,10 @@ impl SolanaControlPlane {
             .await
             .map_err(|err| err.to_string())?;
         let failure_report = TxStack::failure_report(&record);
-        Ok(Json(json!({
-            "record": record,
-            "failure_report": failure_report,
-        })))
+        Ok(Json(SubmitSignedBundleOutput {
+            record,
+            failure_report,
+        }))
     }
 
     #[tool(
@@ -173,12 +185,12 @@ impl SolanaControlPlane {
     async fn record_agent_decision(
         &self,
         Parameters(params): Parameters<RecordAgentDecisionParams>,
-    ) -> Result<Json<serde_json::Value>, String> {
+    ) -> Result<Json<RecordAgentDecisionOutput>, String> {
         self.stack
             .log_agent_audit(&params.into())
             .await
             .map_err(|err| err.to_string())?;
-        Ok(Json(json!({ "ok": true })))
+        Ok(Json(RecordAgentDecisionOutput { ok: true }))
     }
 }
 
@@ -201,6 +213,7 @@ pub async fn run() -> anyhow::Result<()> {
     let bind_addr = parse_bind_addr()?;
     let config = Config::from_env()?;
     let stack = Arc::new(TxStack::connect(config).await?);
+    let ready_slot = stack.wait_for_next_slot().await?;
 
     let service = StreamableHttpService::new(
         {
@@ -219,7 +232,8 @@ pub async fn run() -> anyhow::Result<()> {
             "transport": "streamable_http",
             "sdk": "rmcp",
             "bind_addr": bind_addr.to_string(),
-            "url": format!("http://{bind_addr}/mcp")
+            "url": format!("http://{bind_addr}/mcp"),
+            "ready_slot": ready_slot
         })
     );
     axum::serve(listener, router).await?;

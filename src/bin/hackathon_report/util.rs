@@ -1,7 +1,7 @@
 use std::{
-    env,
+    env, fs,
     net::{SocketAddr, TcpStream},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Output},
     thread,
     time::{Duration, Instant},
@@ -35,6 +35,7 @@ pub(crate) fn wait_for_agent(
     bind_addr: &str,
     timeout: Duration,
     agent: &mut AgentGuard,
+    agent_log_path: &Path,
 ) -> anyhow::Result<()> {
     let addr: SocketAddr = bind_addr
         .parse()
@@ -45,11 +46,19 @@ pub(crate) fn wait_for_agent(
             return Ok(());
         }
         if let Some(status) = agent.try_wait()? {
-            bail!("agent_mcp exited before opening {bind_addr}: {status}");
+            bail!(
+                "agent_mcp exited before opening {bind_addr}: {status}\nagent log: {}\n{}",
+                agent_log_path.display(),
+                read_to_string_lossy(agent_log_path)
+            );
         }
         thread::sleep(Duration::from_millis(500));
     }
-    bail!("agent_mcp did not become ready at {bind_addr} within {timeout:?}");
+    bail!(
+        "agent_mcp did not become ready at {bind_addr} within {timeout:?}\nagent log: {}\n{}",
+        agent_log_path.display(),
+        read_to_string_lossy(agent_log_path)
+    );
 }
 
 pub(crate) fn run_with_timeout(mut command: Command, timeout: Duration) -> anyhow::Result<Output> {
@@ -81,4 +90,8 @@ pub(crate) fn env_u64(name: &str, default: u64) -> u64 {
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(default)
+}
+
+fn read_to_string_lossy(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_else(|err| format!("failed to read log: {err}"))
 }

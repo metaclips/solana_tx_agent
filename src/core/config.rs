@@ -1,6 +1,6 @@
-use std::{env, path::PathBuf, time::Duration};
+use std::{env, fs, path::PathBuf, time::Duration};
 
-use solana_sdk::signature::Keypair;
+use solana_sdk::{signature::Keypair, signer::SeedDerivable};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -10,6 +10,7 @@ pub struct Config {
     pub jito_auth_keypair_path: Option<PathBuf>,
     pub jito_block_engine_url: String,
     pub lifecycle_log_path: PathBuf,
+    pub yellowstone_connect_timeout: Duration,
     pub leader_lookahead_slots: u64,
     pub tip_floor_lamports: u64,
     pub confirmation_timeout: Duration,
@@ -37,6 +38,10 @@ impl Config {
             lifecycle_log_path: env::var("LIFECYCLE_LOG")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("lifecycle.log.jsonl")),
+            yellowstone_connect_timeout: Duration::from_secs(env_u64(
+                "YELLOWSTONE_CONNECT_TIMEOUT_SECS",
+                30,
+            )),
             leader_lookahead_slots: env_u64("LEADER_LOOKAHEAD_SLOTS", 3),
             tip_floor_lamports: env_u64("TIP_FLOOR_LAMPORTS", 1_000),
             confirmation_timeout: Duration::from_secs(env_u64("CONFIRMATION_TIMEOUT_SECS", 90)),
@@ -50,13 +55,26 @@ impl Config {
 
     pub fn jito_auth_keypair(&self) -> anyhow::Result<Keypair> {
         if let Some(path) = &self.jito_auth_keypair_path {
-            solana_sdk::signature::read_keypair_file(path).map_err(|err| {
-                anyhow::anyhow!("failed reading Jito auth keypair {}: {err}", path.display())
-            })
+            read_keypair_or_seed_file(path)
         } else {
             anyhow::bail!("JITO_AUTH_KEYPAIR is required for Jito bundle submission")
         }
     }
+}
+
+fn read_keypair_or_seed_file(path: &PathBuf) -> anyhow::Result<Keypair> {
+    let raw = fs::read_to_string(path).map_err(|err| {
+        anyhow::anyhow!("failed reading Jito auth keypair {}: {err}", path.display())
+    })?;
+    let bytes: Vec<u8> = serde_json::from_str(&raw).map_err(|err| {
+        anyhow::anyhow!(
+            "failed parsing Jito auth keypair {} as JSON byte array: {err}",
+            path.display()
+        )
+    })?;
+
+    Keypair::from_seed(&bytes)
+        .map_err(|err| anyhow::anyhow!("failed constructing Jito auth keypair from seed: {err}"))
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {

@@ -62,10 +62,11 @@ cargo run --bin agent_host -- \
 | `--tip-lamports` | Tip amount, in lamports, used when generating report transactions and recorded in lifecycle metadata. Defaults to `1000`. |
 | `--tip-account` | Jito tip account used in generated transfer transactions. Defaults to the built-in Jito tip account. |
 | `--bind` | Local address used for the MCP server started by the report generator. Defaults to `127.0.0.1:18080`. |
+| `--yellowstone-connect-timeout-secs` | Timeout used for Yellowstone/Geyser connect and subscribe calls before the stream reconnects. Defaults to `30`. The stack can still use RPC slot/status fallback while Yellowstone reconnects. |
 | `--confirmation-timeout-secs` | How long the stack waits for processed/confirmed/finalized evidence before classifying a timeout. |
 | `--leader-lookahead-slots` | How close a connected Jito leader must be before a leader-aware submission proceeds. |
 | `--max-agent-wait-slots` | Maximum wait window allowed by policy for the client decision loop. |
-| `--server-ready-timeout-secs` | How long the report generator waits for `agent_mcp` to open its local port. |
+| `--server-ready-timeout-secs` | How long the report generator waits for `agent_mcp` to open its local port. The MCP server opens the port only after observing a slot advance. |
 | `--submission-timeout-secs` | Per-submission timeout for the `agent_host` process. |
 
 ### `agent_mcp`
@@ -144,7 +145,7 @@ The project separates core infrastructure from decision orchestration:
 
 | Component | Role |
 | --- | --- |
-| `agent_mcp` | Long-running MCP streamable HTTP server at `/mcp`. Owns live infrastructure and controlled write tools. |
+| `agent_mcp` | Long-running MCP streamable HTTP server at `/mcp`. Owns live infrastructure and controlled write tools. It waits for a slot advance before accepting requests. |
 | `agent_host` | MCP client and decision host. Receives an already signed transaction, queries live state, validates the decision, then calls MCP tools. |
 | `TxStack` | Verifies signed transactions, submits Jito bundles, tracks lifecycle, and writes JSONL records. |
 | `JitoClient` | Connects to the Jito block engine, fetches leader windows, submits bundles, and receives bundle events. |
@@ -279,11 +280,14 @@ export JITO_AUTH_KEYPAIR="$HOME/.config/solana/jito-auth.json"
 export TX_AGENT_REAL_PAYER_KEYPAIR="$HOME/.config/solana/funded-payer.json"
 ```
 
+`JITO_AUTH_KEYPAIR` must point to a 32-byte seed JSON array used with `Keypair::from_seed`. `TX_AGENT_REAL_PAYER_KEYPAIR` should be a funded Solana keypair used only by the report generator to build successful live transaction cases.
+
 Optional environment:
 
 ```sh
 export JITO_BLOCK_ENGINE_URL="https://frankfurt.mainnet.block-engine.jito.wtf"
 export LIFECYCLE_LOG="lifecycle.log.jsonl"
+export YELLOWSTONE_CONNECT_TIMEOUT_SECS=30
 export LEADER_LOOKAHEAD_SLOTS=3
 export TIP_FLOOR_LAMPORTS=1000
 export CONFIRMATION_TIMEOUT_SECS=90

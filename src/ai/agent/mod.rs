@@ -211,16 +211,16 @@ impl AiAgent {
                     max_wait_slots: 0,
                     source: "fallback_reasoner".to_string(),
                 },
-                FailureKind::ComputeExceeded | FailureKind::SimulationFailure => {
-                    OperationalDecision {
-                        action: OperationalAction::Abandon,
-                        reason: "The failure is transaction-shape related, not a timing or tip issue.".to_string(),
-                        refresh_blockhash: false,
-                        tip_lamports: ctx.previous_tip_lamports.max(ctx.tip_floor_lamports),
-                        max_wait_slots: 0,
-                        source: "fallback_reasoner".to_string(),
-                    }
-                }
+                FailureKind::ComputeExceeded
+                | FailureKind::InsufficientFunds
+                | FailureKind::SimulationFailure => OperationalDecision {
+                    action: OperationalAction::Abandon,
+                    reason: "The failure is transaction-shape or account-state related, not a timing or tip issue.".to_string(),
+                    refresh_blockhash: false,
+                    tip_lamports: ctx.previous_tip_lamports.max(ctx.tip_floor_lamports),
+                    max_wait_slots: 0,
+                    source: "fallback_reasoner".to_string(),
+                },
                 FailureKind::FeeTooLow | FailureKind::BundleFailure => {
                     let target_tip = sol_to_lamports(ctx.recent_tip.landed_tips_95th_percentile)
                         .max(default_tip)

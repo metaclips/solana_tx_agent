@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, interval};
 use tokio_tungstenite::connect_async;
@@ -8,7 +9,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
 /// Live Jito tip data emitted by the tip stream.
-#[derive(Debug, Deserialize, Serialize, Default, Clone)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone, schemars::JsonSchema)]
 pub struct TipData {
     pub time: String,
     pub landed_tips_25th_percentile: f64,

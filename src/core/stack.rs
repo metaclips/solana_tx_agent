@@ -8,12 +8,13 @@ use std::{
 
 use anyhow::Context;
 use base64::Engine;
+use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_commitment_config::CommitmentConfig;
 use solana_sdk::{hash::Hash, signature::Signature, transaction::VersionedTransaction};
 use tokio::sync::RwLock;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::core::{
     config::Config,
@@ -25,7 +26,7 @@ use crate::core::{
     networking::{Geyser, GeyserStream},
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NetworkState {
     pub current_slot: u64,
     pub latest_blockhash_slot: Option<u64>,
@@ -55,7 +56,7 @@ pub enum SignedTransactionEncoding {
     Base58,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FailureReport {
     pub submission_id: String,
     pub attempt: u32,
@@ -126,6 +127,48 @@ impl TxStack {
             tip_floor_lamports: self.config.tip_floor_lamports,
             max_tip_lamports: self.config.max_agent_tip_lamports,
             leader_lookahead_slots: self.config.leader_lookahead_slots,
+        }
+    }
+
+    pub async fn wait_for_next_slot(&self) -> anyhow::Result<u64> {
+        let baseline_slot = self.ensure_current_slot().await?;
+        info!(
+            baseline_slot,
+            "waiting for one slot advance before accepting MCP requests"
+        );
+
+        loop {
+            let streamed_slot = self.latest_slot.load(Ordering::Relaxed);
+            if streamed_slot > baseline_slot {
+                info!(
+                    baseline_slot,
+                    ready_slot = streamed_slot,
+                    "observed slot advance from Yellowstone"
+                );
+                return Ok(streamed_slot);
+            }
+
+            match self.rpc.get_slot().await {
+                Ok(slot) if slot > baseline_slot => {
+                    self.latest_slot.store(slot, Ordering::Relaxed);
+                    self.jito.update_current_slot(slot);
+                    warn!(
+                        baseline_slot,
+                        ready_slot = slot,
+                        "observed slot advance from RPC fallback before Yellowstone emitted next slot"
+                    );
+                    return Ok(slot);
+                }
+                Ok(slot) => {
+                    if streamed_slot == 0 {
+                        self.latest_slot.store(slot, Ordering::Relaxed);
+                        self.jito.update_current_slot(slot);
+                    }
+                }
+                Err(err) => warn!("RPC slot lookup failed while waiting for next slot: {err:?}"),
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -375,10 +418,16 @@ impl TxStack {
         let geyser = Arc::new(Geyser { stream: send });
         let endpoint = self.config.yellowstone_endpoint.clone();
         let token = self.config.yellowstone_token.clone();
+        let connect_timeout = self.config.yellowstone_connect_timeout;
 
         tokio::spawn(async move {
             geyser
-                .new_geyser_signature_status_subscription(endpoint, token, signature)
+                .new_geyser_signature_status_subscription(
+                    endpoint,
+                    token,
+                    signature,
+                    connect_timeout,
+                )
                 .await;
         });
 
@@ -393,9 +442,12 @@ impl TxStack {
         let latest_slot = self.latest_slot.clone();
         let latest_blockhash = self.latest_blockhash.clone();
         let jito = self.jito.clone();
+        let connect_timeout = self.config.yellowstone_connect_timeout;
 
         tokio::spawn(async move {
-            geyser.new_geyser_slot_subscription(endpoint, token).await;
+            geyser
+                .new_geyser_slot_subscription(endpoint, token, connect_timeout)
+                .await;
         });
 
         tokio::spawn(async move {
@@ -417,9 +469,45 @@ impl TxStack {
     }
 
     async fn wait_for_slot(&self) {
+        let fallback_after = Duration::from_secs(2);
+        let mut waited = Duration::ZERO;
+
         while self.latest_slot.load(Ordering::Relaxed) == 0 {
+            if waited >= fallback_after {
+                match self.rpc.get_slot().await {
+                    Ok(slot) => {
+                        self.latest_slot.store(slot, Ordering::Relaxed);
+                        self.jito.update_current_slot(slot);
+                        warn!(
+                            "Yellowstone slot stream has not produced an initial slot; using RPC slot fallback {slot}"
+                        );
+                        return;
+                    }
+                    Err(err) => {
+                        warn!("RPC slot fallback failed while waiting for Yellowstone: {err:?}");
+                    }
+                }
+            }
+
             tokio::time::sleep(Duration::from_millis(100)).await;
+            waited += Duration::from_millis(100);
         }
+    }
+
+    async fn ensure_current_slot(&self) -> anyhow::Result<u64> {
+        let current_slot = self.latest_slot.load(Ordering::Relaxed);
+        if current_slot > 0 {
+            return Ok(current_slot);
+        }
+
+        let slot = self
+            .rpc
+            .get_slot()
+            .await
+            .context("failed fetching current slot from RPC")?;
+        self.latest_slot.store(slot, Ordering::Relaxed);
+        self.jito.update_current_slot(slot);
+        Ok(slot)
     }
 }
 

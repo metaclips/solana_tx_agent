@@ -30,6 +30,7 @@ pub(crate) struct ReportConfig {
     pub(crate) lifecycle_log_path: PathBuf,
     pub(crate) agent_log_path: PathBuf,
     pub(crate) report_path: PathBuf,
+    pub(crate) yellowstone_connect_timeout_secs: u64,
     pub(crate) confirmation_timeout_secs: u64,
     pub(crate) leader_lookahead_slots: u64,
     pub(crate) max_agent_wait_slots: u64,
@@ -63,6 +64,7 @@ impl ReportConfig {
         let mut report_path = env::var("TX_AGENT_HACKATHON_REPORT")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("hackathon_report.json"));
+        let mut yellowstone_connect_timeout_secs = env_u64("YELLOWSTONE_CONNECT_TIMEOUT_SECS", 30);
         let mut confirmation_timeout_secs = env_u64("CONFIRMATION_TIMEOUT_SECS", 45);
         let mut leader_lookahead_slots = env_u64("LEADER_LOOKAHEAD_SLOTS", 3);
         let mut max_agent_wait_slots = env_u64("MAX_AGENT_WAIT_SLOTS", 3);
@@ -90,6 +92,9 @@ impl ReportConfig {
                 "--out" => report_path = PathBuf::from(next_arg(&mut iter, &arg)?),
                 "--confirmation-timeout-secs" => {
                     confirmation_timeout_secs = next_arg(&mut iter, &arg)?.parse()?;
+                }
+                "--yellowstone-connect-timeout-secs" => {
+                    yellowstone_connect_timeout_secs = next_arg(&mut iter, &arg)?.parse()?;
                 }
                 "--leader-lookahead-slots" => {
                     leader_lookahead_slots = next_arg(&mut iter, &arg)?.parse()?;
@@ -147,6 +152,7 @@ impl ReportConfig {
             lifecycle_log_path,
             agent_log_path,
             report_path,
+            yellowstone_connect_timeout_secs,
             confirmation_timeout_secs,
             leader_lookahead_slots,
             max_agent_wait_slots,
@@ -176,6 +182,7 @@ Common options:\n  \
 --failure-count N                  default 2, must be at least 2\n  \
 --tip-lamports N                   default 1000\n  \
 --tip-account PUBKEY               default Jito tip account\n  \
+--yellowstone-connect-timeout-secs N default 30\n  \
 --bind HOST:PORT                   default 127.0.0.1:18080"
     );
 }

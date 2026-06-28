@@ -1,11 +1,12 @@
 use std::{fs::OpenOptions, io::Write, path::PathBuf, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
+use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 use solana_sdk::signature::Signature;
 use tokio::sync::Mutex;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 pub enum CommitmentStage {
     Submitted,
     Accepted,
@@ -14,11 +15,12 @@ pub enum CommitmentStage {
     Finalized,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 pub enum FailureKind {
     ExpiredBlockhash,
     FeeTooLow,
     ComputeExceeded,
+    InsufficientFunds,
     BundleFailure,
     JitoRateLimited,
     SimulationFailure,
@@ -31,9 +33,20 @@ impl FailureKind {
         let lower = raw.to_ascii_lowercase();
         if lower.contains("blockhash") || lower.contains("block height exceeded") {
             Self::ExpiredBlockhash
+        } else if lower.contains("attempt to debit")
+            || lower.contains("no record of a prior credit")
+            || lower.contains("insufficient funds")
+            || lower.contains("insufficient lamports")
+        {
+            Self::InsufficientFunds
         } else if lower.contains("bid") || lower.contains("tip") || lower.contains("fee") {
             Self::FeeTooLow
-        } else if lower.contains("compute") || lower.contains("cu") {
+        } else if lower.contains("compute")
+            || lower.contains("compute unit")
+            || lower.contains("computational budget exceeded")
+            || lower.contains("cu limit")
+            || lower.contains("cu_limit")
+        {
             Self::ComputeExceeded
         } else if lower.contains("simulation") {
             Self::SimulationFailure
@@ -49,7 +62,7 @@ impl FailureKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct StageEvent {
     pub stage: CommitmentStage,
     pub at: DateTime<Utc>,
@@ -57,7 +70,7 @@ pub struct StageEvent {
     pub detail: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct LifecycleRecord {
     pub submission_id: String,
     pub attempt: u32,
@@ -176,6 +189,30 @@ fn delta_ms(start: DateTime<Utc>, end: DateTime<Utc>) -> u128 {
         .to_std()
         .unwrap_or_else(|_| Duration::from_millis(0))
         .as_millis()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FailureKind;
+
+    #[test]
+    fn classifies_unfunded_debit_without_matching_execute_as_cu() {
+        let detail = "A transaction in the bundle failed to execute: \
+            error=Attempt to debit an account but found no record of a prior credit.";
+
+        assert_eq!(
+            FailureKind::classify(detail),
+            FailureKind::InsufficientFunds
+        );
+    }
+
+    #[test]
+    fn classifies_compute_budget_failures() {
+        assert_eq!(
+            FailureKind::classify("Transaction consumed compute units above cu limit"),
+            FailureKind::ComputeExceeded
+        );
+    }
 }
 
 #[derive(Clone)]

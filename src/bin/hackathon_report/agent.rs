@@ -1,6 +1,9 @@
 use std::{
     fs::File,
+    io::{Read, Write},
     process::{Child, Command, Output, Stdio},
+    sync::{Arc, Mutex},
+    thread::{self, JoinHandle},
     time::Duration,
 };
 
@@ -14,9 +17,9 @@ use crate::{
 };
 
 pub(crate) fn start_agent(config: &ReportConfig) -> anyhow::Result<AgentGuard> {
-    let stdout = File::create(&config.agent_log_path)
+    let log_file = File::create(&config.agent_log_path)
         .with_context(|| format!("failed creating {}", config.agent_log_path.display()))?;
-    let stderr = stdout.try_clone()?;
+    let log_file = Arc::new(Mutex::new(log_file));
     let mut command = Command::new(sibling_binary("agent_mcp")?);
     command
         .arg("--bind")
@@ -27,6 +30,10 @@ pub(crate) fn start_agent(config: &ReportConfig) -> anyhow::Result<AgentGuard> {
         .env("LIFECYCLE_LOG", &config.lifecycle_log_path)
         .env("MCP_BIND_ADDR", &config.mcp_bind_addr)
         .env("MAX_AGENT_RETRIES", "0")
+        .env(
+            "YELLOWSTONE_CONNECT_TIMEOUT_SECS",
+            config.yellowstone_connect_timeout_secs.to_string(),
+        )
         .env(
             "CONFIRMATION_TIMEOUT_SECS",
             config.confirmation_timeout_secs.to_string(),
@@ -40,15 +47,26 @@ pub(crate) fn start_agent(config: &ReportConfig) -> anyhow::Result<AgentGuard> {
             "MAX_AGENT_WAIT_SLOTS",
             config.max_agent_wait_slots.to_string(),
         )
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(token) = &config.yellowstone_token {
         command.env("YELLOWSTONE_TOKEN", token);
     }
 
-    Ok(AgentGuard {
-        child: command.spawn().context("failed starting agent_mcp")?,
-    })
+    let mut child = command.spawn().context("failed starting agent_mcp")?;
+    let mut log_threads = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        log_threads.push(spawn_log_forwarder(
+            stdout,
+            log_file.clone(),
+            LogStream::Stdout,
+        ));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        log_threads.push(spawn_log_forwarder(stderr, log_file, LogStream::Stderr));
+    }
+
+    Ok(AgentGuard { child, log_threads })
 }
 
 pub(crate) fn submit_transaction_with_agent(
@@ -101,6 +119,10 @@ fn run_agent_host(config: &ReportConfig, tx: &GeneratedTransaction) -> anyhow::R
         .env("MCP_SERVER_URL", config.mcp_url())
         .env("MAX_AGENT_RETRIES", "0")
         .env(
+            "YELLOWSTONE_CONNECT_TIMEOUT_SECS",
+            config.yellowstone_connect_timeout_secs.to_string(),
+        )
+        .env(
             "CONFIRMATION_TIMEOUT_SECS",
             config.confirmation_timeout_secs.to_string(),
         )
@@ -126,6 +148,7 @@ fn run_agent_host(config: &ReportConfig, tx: &GeneratedTransaction) -> anyhow::R
 #[derive(Debug)]
 pub(crate) struct AgentGuard {
     child: Child,
+    log_threads: Vec<JoinHandle<()>>,
 }
 
 impl AgentGuard {
@@ -138,5 +161,49 @@ impl Drop for AgentGuard {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        for thread in self.log_threads.drain(..) {
+            let _ = thread.join();
+        }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LogStream {
+    Stdout,
+    Stderr,
+}
+
+fn spawn_log_forwarder<R>(
+    mut reader: R,
+    log_file: Arc<Mutex<File>>,
+    stream: LogStream,
+) -> JoinHandle<()>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let read = match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(_) => break,
+            };
+            let chunk = &buffer[..read];
+            if let Ok(mut file) = log_file.lock() {
+                let _ = file.write_all(chunk);
+                let _ = file.flush();
+            }
+            match stream {
+                LogStream::Stdout => {
+                    let _ = std::io::stdout().write_all(chunk);
+                    let _ = std::io::stdout().flush();
+                }
+                LogStream::Stderr => {
+                    let _ = std::io::stderr().write_all(chunk);
+                    let _ = std::io::stderr().flush();
+                }
+            }
+        }
+    })
 }

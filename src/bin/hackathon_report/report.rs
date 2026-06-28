@@ -27,6 +27,7 @@ pub(crate) fn run_report(config: ReportConfig) -> anyhow::Result<HackathonReport
         &config.mcp_bind_addr,
         Duration::from_secs(config.server_ready_timeout_secs),
         &mut agent,
+        &config.agent_log_path,
     )?;
 
     let rpc = RpcClient::new_with_commitment(
@@ -66,9 +67,12 @@ pub(crate) fn run_report(config: ReportConfig) -> anyhow::Result<HackathonReport
         run_started_at,
         run_finished_at: Utc::now(),
         environment: ReportEnvironment {
-            solana_rpc_url: config.solana_rpc_url,
-            yellowstone_endpoint: config.yellowstone_endpoint,
-            jito_block_engine_url: env::var("JITO_BLOCK_ENGINE_URL").ok(),
+            solana_rpc_url: "REDACTED".to_string(),
+            yellowstone_endpoint: "REDACTED".to_string(),
+            jito_block_engine_url: env::var("JITO_BLOCK_ENGINE_URL")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .map(|_| "REDACTED".to_string()),
             mcp_url,
             lifecycle_log_path: config.lifecycle_log_path,
             agent_log_path: config.agent_log_path,
@@ -83,8 +87,40 @@ pub(crate) fn write_report(path: &Path, report: &HackathonReport) -> anyhow::Res
     if let Some(parent) = path.parent().filter(|path| !path.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, serde_json::to_string_pretty(report)?)?;
+    let mut value = serde_json::to_value(report)?;
+    scrub_sensitive_json(&mut value);
+    fs::write(path, serde_json::to_string_pretty(&value)?)?;
     Ok(())
+}
+
+fn scrub_sensitive_json(value: &mut Value) {
+    match value {
+        Value::String(text) => *text = scrub_sensitive_text(text),
+        Value::Array(values) => values.iter_mut().for_each(scrub_sensitive_json),
+        Value::Object(values) => values.values_mut().for_each(scrub_sensitive_json),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn scrub_sensitive_text(text: &str) -> String {
+    let mut scrubbed = text.to_string();
+    for name in [
+        "SOLANA_RPC_URL",
+        "YELLOWSTONE_ENDPOINT",
+        "YELLOWSTONE_TOKEN",
+        "JITO_AUTH_KEYPAIR",
+        "TX_AGENT_REAL_PAYER_KEYPAIR",
+        "PAYER_KEYPAIR",
+        "OPENAI_API_KEY",
+        "JITO_BLOCK_ENGINE_URL",
+    ] {
+        if let Ok(secret) = env::var(name) {
+            if !secret.is_empty() {
+                scrubbed = scrubbed.replace(&secret, "REDACTED");
+            }
+        }
+    }
+    scrubbed
 }
 
 fn attach_lifecycle_records(submissions: &mut [SubmissionReport], records: &[Value]) {

@@ -45,6 +45,7 @@ impl Geyser {
         self: Arc<Self>,
         endpoint: String,
         token: Option<String>,
+        connect_timeout: Duration,
     ) {
         let request = SubscribeRequest {
             commitment: Some(CommitmentLevel::Confirmed.into()),
@@ -62,7 +63,8 @@ impl Geyser {
             ..Default::default()
         };
 
-        self.new_geyser_stream(endpoint, token, request).await;
+        self.new_geyser_stream(endpoint, token, request, connect_timeout)
+            .await;
     }
 
     /// Subscribe to status updates for one exact transaction signature.
@@ -71,6 +73,7 @@ impl Geyser {
         endpoint: String,
         token: Option<String>,
         signature: Signature,
+        connect_timeout: Duration,
     ) {
         let request = SubscribeRequest {
             commitment: Some(CommitmentLevel::Processed.into()),
@@ -86,7 +89,8 @@ impl Geyser {
             ..Default::default()
         };
 
-        self.new_geyser_stream(endpoint, token, request).await;
+        self.new_geyser_stream(endpoint, token, request, connect_timeout)
+            .await;
     }
 
     async fn new_geyser_stream(
@@ -94,8 +98,13 @@ impl Geyser {
         endpoint: String,
         token: Option<String>,
         mut request: SubscribeRequest,
+        connect_timeout: Duration,
     ) {
-        info!("Geyser endpoint {endpoint} - {token:?}");
+        info!(
+            yellowstone_endpoint_configured = !endpoint.is_empty(),
+            yellowstone_token_present = token.is_some(),
+            "starting Geyser stream"
+        );
         let mut last_seen_slot = request.from_slot.unwrap_or_default();
         let mut reconnect_counter = 0;
 
@@ -117,8 +126,8 @@ impl Geyser {
             .and_then(|builder| builder.x_token(token.as_ref()))
             .and_then(|builder| {
                 builder
-                    .timeout(Duration::from_secs(10))
-                    .keep_alive_timeout(Duration::from_secs(10))
+                    .timeout(connect_timeout)
+                    .keep_alive_timeout(connect_timeout)
                     .tls_config(
                         ClientTlsConfig::new()
                             .with_enabled_roots()
