@@ -1,10 +1,10 @@
-# tx_agent: Generate Report, Start MCP, Run Agent
+# tx_agent
 
-Smart Solana transaction infrastructure prototype for the hackathon bounty. It combines Yellowstone/Geyser slot and signature-status streams, Jito bundle submission, live Jito tip data, lifecycle logging, and an AI-owned operational decision.
+Live Solana transaction control plane for Jito bundle submission, lifecycle tracking, and failure reporting. It combines Yellowstone/Geyser slot and signature-status streams, live Jito tip data, controlled MCP tooling, and a bounded operational decision layer.
 
 ## Quick Start
 
-Generate the hackathon JSON report with 10 live submissions, including at least 2 expected failure cases:
+Generate the JSON report with 10 live submissions, including at least 2 expected failure cases:
 
 ```sh
 cargo build --bins
@@ -39,7 +39,7 @@ cargo run --bin agent_host -- \
 
 ## Architecture Document
 
-The hackathon requires a public architecture document hosted separately from this GitHub repository.
+The submission requires a public architecture document hosted separately from this GitHub repository.
 
 Public architecture document: **TODO: replace with your public Figma, Notion, Google Docs, or other public URL before submission.**
 
@@ -50,7 +50,7 @@ That external document should cover:
 - Data flow between services
 - Infrastructure decisions
 - Failure handling strategy
-- AI agent responsibilities
+- Decision-layer responsibilities
 - Diagrams and deployment notes
 
 The repository implementation is summarized below, but the externally hosted document is the separately judged architecture submission.
@@ -60,7 +60,7 @@ The repository implementation is summarized below, but the externally hosted doc
 ```mermaid
 flowchart LR
     Signer[Upstream Signer<br/>funded keypair or external signing stack]
-    Host[agent_host<br/>AI client host]
+    Host[agent_host<br/>decision client host]
     MCP[agent_mcp<br/>MCP control plane]
     Stack[TxStack<br/>core lifecycle stack]
     Jito[Jito Block Engine<br/>bundle submission/results]
@@ -81,12 +81,12 @@ flowchart LR
     Logs --> Report
 ```
 
-The project separates core infrastructure from AI orchestration:
+The project separates core infrastructure from decision orchestration:
 
 | Area | Path | Responsibility |
 | --- | --- | --- |
 | Core stack | `src/core` | RPC, Yellowstone, Jito, lifecycle logging, MCP server |
-| AI layer | `src/ai` | Operational decision policy, AI host, MCP client |
+| Decision layer | `src/ai` | Operational decision policy, MCP client host |
 | Binaries | `src/bin` | `agent_mcp`, `agent_host`, `hackathon_report` |
 
 ## Key Components
@@ -94,7 +94,7 @@ The project separates core infrastructure from AI orchestration:
 | Component | Role |
 | --- | --- |
 | `agent_mcp` | Long-running MCP streamable HTTP server at `/mcp`. Owns live infrastructure and controlled write tools. |
-| `agent_host` | MCP client and AI host. Receives an already signed transaction, queries live state, validates the decision, then calls MCP tools. |
+| `agent_host` | MCP client and decision host. Receives an already signed transaction, queries live state, validates the decision, then calls MCP tools. |
 | `TxStack` | Verifies signed transactions, submits Jito bundles, tracks lifecycle, and writes JSONL records. |
 | `JitoClient` | Connects to the Jito block engine, fetches leader windows, submits bundles, and receives bundle events. |
 | `Geyser` | Streams live slots, blockhashes, and signature status from Yellowstone/Geyser. |
@@ -119,7 +119,7 @@ sequenceDiagram
     M->>T: read live state
     T-->>M: slot, leader window, tips, limits
     M-->>H: network state
-    H->>H: AI/fallback decision + policy validation
+    H->>H: decision engine + policy validation
     H->>M: submit_signed_bundle
     M->>T: verify and submit unchanged tx
     T->>J: send_bundle
@@ -159,9 +159,9 @@ flowchart TD
 
 The signature boundary controls recovery. If a blockhash expires or a higher tip is required, this agent cannot repair the transaction in-place. It must escalate to an upstream signer for a new signed payload.
 
-## AI Agent Responsibilities
+## Decision Layer Responsibilities
 
-The AI/fallback agent can decide:
+The decision layer can choose:
 
 - `submit_now`
 - `wait_for_leader`
@@ -169,7 +169,7 @@ The AI/fallback agent can decide:
 - `abandon`
 - `escalate`
 
-The policy layer clamps or rejects unsafe decisions. The agent cannot:
+The policy layer clamps or rejects unsafe decisions. The decision layer cannot:
 
 - Access private keys
 - Sign transactions
@@ -273,8 +273,4 @@ For Jito bundle flow, that is especially harmful because the sender may wait for
 
 If the targeted Jito leader skips its slot, the bundle cannot land in that leader's block because no block was produced for that opportunity. Depending on timing and blockhash lifetime, the bundle may be dropped, remain unlanded until it expires, or need to be resent for a later leader window.
 
-This stack treats that as an operational failure path. It records the slot and bundle lifecycle evidence, classifies any returned Jito/Solana failure detail, and lets the agent decide whether to wait, retry the same still-valid signed payload, abandon, or escalate for a new signed transaction with a fresh blockhash and possibly a different tip.
-
-## Notes
-
-This repo intentionally does not import the arbitrage-specific route builder from `arbitrage-rs`. It reuses the useful infrastructure shape: Jito protobufs/auth/tip stream, leader lookup, Yellowstone streaming, lifecycle logging, and bounded agent orchestration. The transaction itself is generic so the stack can be demonstrated without a profitable arbitrage path.
+This stack treats that as an operational failure path. It records the slot and bundle lifecycle evidence, classifies any returned Jito/Solana failure detail, and lets the decision layer choose whether to wait, retry the same still-valid signed payload, abandon, or escalate for a new signed transaction with a fresh blockhash and possibly a different tip.
