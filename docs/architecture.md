@@ -4,25 +4,69 @@ This document is the source draft for the public architecture document required 
 
 ## System Overview
 
-`tx_agent` is a transaction infrastructure stack for Solana. It observes network state through Yellowstone/Geyser, times submissions around connected Jito leaders, sends real Jito bundles, tracks lifecycle progression, classifies failures, and delegates retry decisions to an AI agent.
+`tx_agent` is an MCP-based transaction control plane for Solana. It observes network state through Yellowstone/Geyser, times submissions around connected Jito leaders, sends real Jito bundles, tracks lifecycle progression, classifies failures, and delegates one bounded operational decision to an AI agent hosted outside the infrastructure process.
+
+The core design principle is separation of authority:
+
+- MCP server owns infrastructure access, Jito access, bundle submission, lifecycle tracking, and failure classification.
+- MCP client hosts the agent and LLM and receives already signed encoded transactions.
+- Local policy validates agent output before any write tool executes.
+- Agent decisions and outcomes are logged for audit.
+
+The MCP server and client are implemented with the official `modelcontextprotocol/rust-sdk` Rust crate, published as `rmcp`. The server uses MCP streamable HTTP at `/mcp`; the client host connects with `rmcp::transport::StreamableHttpClientTransport`.
 
 ## Components
-
-### CLI
-
-Entrypoint: `src/main.rs`
-
-Modes:
-
-- `submit --count N`: submit N real bundles.
-- `fault expired-blockhash`: force one expired-blockhash failure and let the agent retry.
-- `print-log`: summarize lifecycle evidence.
 
 ### Config
 
 Module: `src/config.rs`
 
-Reads RPC, Yellowstone, Jito, payer, logging, tip, and AI settings from environment variables.
+Reads RPC, Yellowstone, Jito auth, logging, tip, and AI settings from environment variables.
+
+### MCP Server
+
+Implementation: `src/mcp/server.rs`
+
+Launcher: `src/bin/agent_mcp.rs`
+
+Responsibilities:
+
+- Own all Solana RPC, Yellowstone, Jito auth, and bundle-submission access.
+- Run as a long-lived MCP streamable HTTP service.
+- Maintain live slot/blockhash streams.
+- Track connected Jito leader opportunities.
+- Expose live network state and recent tip data.
+- Verify pre-signed encoded transactions and submit bundles through a narrow controlled write tool.
+- Track lifecycle progression.
+- Classify failures.
+- Append lifecycle and agent-decision audit logs.
+
+Tools:
+
+- `get_network_state`
+- `get_recent_tip_data`
+- `classify_failure`
+- `submit_signed_bundle`
+- `record_agent_decision`
+
+The `submit_signed_bundle` tool accepts a submission ID, attempt number, encoded signed transaction, encoding, leader-wait flag, max wait slots, and observed tip metadata. It verifies and submits the signed transaction unchanged.
+
+### MCP Client / Agent Host
+
+Implementation: `src/mcp/host.rs`
+
+Launcher: `src/bin/agent_host.rs`
+
+Responsibilities:
+
+- Receive an already signed encoded transaction request.
+- Connect to an already running MCP server over HTTP.
+- Query MCP tools for live state.
+- Build the minimal context the LLM needs.
+- Ask the AI agent for a structured operational decision.
+- Validate that decision locally against policy limits.
+- Execute only allowed MCP write tools.
+- Record every input, decision, policy, and outcome.
 
 ### Yellowstone/Geyser Stream
 
@@ -49,15 +93,6 @@ Responsibilities:
 - Submit bundles and handle rate-limit retries.
 - Broadcast bundle lifecycle events to the stack.
 
-### Transaction Factory
-
-Module: `src/tx_factory.rs`
-
-Builds a signed Solana v0 transaction containing:
-
-- A tiny self-transfer, making the transaction independently inspectable.
-- A Jito tip transfer to a live tip account.
-
 ### Lifecycle Tracker
 
 Module: `src/lifecycle.rs`
@@ -69,7 +104,6 @@ Records:
 - Timestamps and slots.
 - Latency deltas.
 - Failure classification.
-- Agent decision.
 
 The output is JSONL for simple auditability.
 
@@ -77,41 +111,56 @@ The output is JSONL for simple auditability.
 
 Module: `src/agent/mod.rs`
 
-Decision owned by the agent: retry behavior after failure.
+Decision owned by the agent: when and how to submit or retry.
 
 Input evidence:
 
-- Failure kind and raw details.
-- Current slot and leader slot.
+- Request ID and attempt number.
+- Current slot and nearest Jito leader window.
+- Recent Jito tip percentiles.
 - Previous tip.
-- Blockhash age.
-- Live Jito tip percentiles.
+- Policy tip/retry/wait limits.
+- Failure kind and raw details.
+- Whether the already signed transaction can be refreshed or tip-adjusted. In this flow those capabilities are false.
 
 Output:
 
-- `retry`, `hold`, or `abort`.
-- Whether to refresh blockhash.
-- Next tip amount.
+- `submit_now`, `wait_for_leader`, `retry`, `abandon`, or `escalate`.
+- Whether to refresh blockhash. For already signed transactions this is forced false by policy/context.
+- Desired or observed tip amount for reasoning and audit.
+- Max wait slots.
 - Reasoning string.
 
 If `OPENAI_API_KEY` is set, the agent calls an OpenAI-compatible chat-completions endpoint and validates the structured JSON response. Otherwise, it uses deterministic fallback reasoning and marks the source as `fallback_reasoner`.
 
+### Policy Engine
+
+Module: `src/policy.rs`
+
+The policy engine validates agent output before any write tool executes:
+
+- Tip must be within `TIP_FLOOR_LAMPORTS` and `MAX_AGENT_TIP_LAMPORTS`.
+- Retry/write attempts must not exceed `MAX_AGENT_RETRIES`.
+- Wait slots are capped by `MAX_AGENT_WAIT_SLOTS`.
+- Invalid decisions are rejected and logged.
+
 ## Data Flow
 
-1. CLI loads config and starts `TxStack`.
-2. `TxStack` starts Yellowstone slot/blockhash streaming.
-3. Jito client authenticates, subscribes to bundle results, fetches leaders, fetches tip accounts, and starts tip stream.
-4. Stack waits for a Jito leader within `LEADER_LOOKAHEAD_SLOTS`.
-5. Stack fetches a processed blockhash from RPC.
-6. Agent computes initial tip from live Jito tip data and slot pressure.
-7. Transaction factory builds and signs the transaction.
-8. Jito client submits the transaction as a bundle.
-9. Stack opens a Yellowstone signature-status subscription.
-10. Jito bundle events and Yellowstone signature events update the lifecycle record.
-11. RPC commitment polling fills in confirmed/finalized fallback evidence.
-12. On failure, the stack classifies the reason and passes evidence to the AI agent.
-13. Agent decides retry/hold/abort.
-14. If retry, stack refreshes blockhash, recalculates tip, and resubmits.
+1. `agent_host` receives an already signed encoded transaction request.
+2. `agent_host` connects to the already running `agent_mcp` HTTP MCP endpoint.
+3. `agent_mcp` has already started `TxStack`.
+4. `TxStack` maintains Yellowstone slot/blockhash streaming.
+5. Jito client authenticates, subscribes to bundle results, fetches leaders, fetches tip accounts, and starts tip stream.
+6. `agent_host` calls `get_network_state`.
+7. `agent_host` builds an `OperationalContext` and asks the LLM for a structured decision.
+8. `agent_host` validates the decision through the policy engine.
+9. If the decision is `submit_now` or `retry`, `agent_host` calls `submit_signed_bundle`.
+10. `agent_mcp` verifies the signed transaction, optionally waits for the configured leader window, submits the Jito bundle, subscribes to signature status, and tracks lifecycle.
+11. Jito bundle events and Yellowstone signature events update the lifecycle record.
+12. RPC commitment polling fills in confirmed/finalized fallback evidence.
+13. On failure, `agent_mcp` returns a structured failure report.
+14. `agent_host` records the decision and outcome through `record_agent_decision`.
+15. If failure is retryable and policy allows it, the agent decides whether to retry, wait, abandon, or escalate.
 
 ## Failure Handling
 
@@ -126,36 +175,45 @@ Classified failures:
 - Timeout
 - Unknown
 
-Expired blockhash is handled by refreshing the processed blockhash, recalculating tip, and resubmitting only if the agent chooses retry.
+Expired blockhash is handled by returning a structured failure report to the agent host. The agent cannot refresh the blockhash because doing so would invalidate the signature; it escalates for a newly signed transaction.
 
-Fee/tip failures increase tip toward higher live Jito percentiles.
+Fee/tip failures are similar. The agent cannot mutate the embedded tip, so it escalates for a newly signed transaction with a higher tip.
 
-Compute and simulation failures default to abort because blockhash/tip changes do not fix transaction construction errors.
+Compute and simulation failures default to abandon because blockhash/tip changes do not fix transaction construction errors.
 
 ## Infrastructure Decisions
 
 - Yellowstone is primary for slot and signature lifecycle evidence.
-- RPC is used for blockhash fetch and commitment fallback.
-- Processed commitment is used for blockhash fetch to preserve lifetime.
+- RPC is used for commitment fallback.
 - Jito connected leader data is used before submission to avoid blind sending.
 - Lifecycle evidence is append-only JSONL for auditability.
-- Agent decisions are stored inside the lifecycle record for judging.
+- Agent-host decisions are written to `agent_decisions.log.jsonl`.
 
 ## Suggested Diagram
 
 ```text
-             +-------------------+
-             |       CLI         |
-             +---------+---------+
-                       |
-                       v
-             +-------------------+
-             |      TxStack      |
-             +---+-----------+---+
-                 |           |
-                 v           v
+          +---------------------+
+          |  MCP Client         |
+          |  agent_host         |
+          +----+-----------+----+
+               |           |
+               v           v
+        +----------+   +-------------+
+        | AI Agent |   | Policy      |
+        | LLM      |   | Validator   |
+        +-----+----+   +------+------+
+              |               |
+              +-------+-------+
+                      |
+                      v
+          +---------------------+
+          | MCP Server          |
+          | agent_mcp           |
+          +----+------------+---+
+               |            |
+               v            v
        +--------------+   +----------------+
-       | Yellowstone  |   |  Jito Client   |
+       | Yellowstone  |   | Jito Client    |
        | Slot/Status  |   | Leaders/Bundle |
        +------+-------+   +---+------------+
               |               |
@@ -163,11 +221,5 @@ Compute and simulation failures default to abort because blockhash/tip changes d
         +-----------+   +-------------+
         | Lifecycle |<--| Bundle Feed |
         | Logger    |   +-------------+
-        +-----+-----+
-              |
-              v
-        +-----------+
-        | AI Agent  |
-        | Retry     |
         +-----------+
 ```

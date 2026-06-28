@@ -1,43 +1,66 @@
-//! AI decision-making layer for tx_agent.
+//! AI decision-making layer for the MCP transaction control plane.
 //!
-//! The agent owns retry decisions after failures. When `OPENAI_API_KEY` is
-//! present, it asks an OpenAI-compatible chat-completions endpoint for a
-//! structured decision. Without a key, it falls back to deterministic reasoning
-//! and still records the evidence and rationale used for the decision.
+//! The agent owns one bounded operational decision for an already signed
+//! transaction: submit now, wait for a leader, retry the same signed payload,
+//! abandon, or escalate for a newly signed payload.
 
 use serde::{Deserialize, Serialize};
 
 use crate::{config::Config, jito::tip::TipData, lifecycle::FailureKind};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentContext {
-    pub submission_id: String,
-    pub attempt: u32,
-    pub failure: FailureKind,
-    pub failure_detail: String,
-    pub current_slot: Option<u64>,
-    pub leader_slot: Option<u64>,
-    pub previous_tip_lamports: u64,
-    pub blockhash_age_slots: Option<u64>,
-    pub tip: TipData,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum RetryAction {
+pub enum OperationalAction {
+    SubmitNow,
+    WaitForLeader,
     Retry,
-    Hold,
-    Abort,
+    Abandon,
+    Escalate,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RetryDecision {
-    pub action: RetryAction,
+pub struct OperationalContext {
+    pub request_id: String,
+    pub attempt: u32,
+    pub current_slot: Option<u64>,
+    pub leader_slot: Option<u64>,
+    pub slots_until_leader: Option<u64>,
+    pub recent_tip: TipData,
+    pub previous_tip_lamports: u64,
+    pub tip_floor_lamports: u64,
+    pub max_tip_lamports: u64,
+    pub can_refresh_blockhash: bool,
+    pub can_adjust_tip: bool,
+    pub failure: Option<AgentFailureReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentFailureReport {
+    pub failure: FailureKind,
+    pub detail: String,
+    pub submitted_slot: Option<u64>,
+    pub blockhash: String,
+    pub processed_latency_ms: Option<u128>,
+    pub confirmed_latency_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperationalDecision {
+    pub action: OperationalAction,
     pub reason: String,
     pub refresh_blockhash: bool,
     pub tip_lamports: u64,
     pub max_wait_slots: u64,
     pub source: String,
+}
+
+impl OperationalDecision {
+    pub fn is_write_action(&self) -> bool {
+        matches!(
+            self.action,
+            OperationalAction::SubmitNow | OperationalAction::Retry
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -68,23 +91,25 @@ impl AiAgent {
         sol_to_lamports(percentile_tip_sol).max(floor)
     }
 
-    pub async fn decide_retry(&self, ctx: &AgentContext) -> RetryDecision {
+    pub async fn decide_operation(&self, ctx: &OperationalContext) -> OperationalDecision {
         if let Some(api_key) = &self.api_key {
-            match self.decide_retry_with_llm(api_key, ctx).await {
+            match self.decide_operation_with_llm(api_key, ctx).await {
                 Ok(decision) => return decision,
                 Err(err) => {
-                    tracing::warn!("AI retry decision failed, using fallback reasoning: {err:?}");
+                    tracing::warn!(
+                        "AI operational decision failed, using fallback reasoning: {err:?}"
+                    );
                 }
             }
         }
-        self.fallback_retry(ctx)
+        self.fallback_operation(ctx)
     }
 
-    async fn decide_retry_with_llm(
+    async fn decide_operation_with_llm(
         &self,
         api_key: &str,
-        ctx: &AgentContext,
-    ) -> anyhow::Result<RetryDecision> {
+        ctx: &OperationalContext,
+    ) -> anyhow::Result<OperationalDecision> {
         #[derive(Serialize)]
         struct Message<'a> {
             role: &'a str,
@@ -115,11 +140,16 @@ impl AiAgent {
         }
 
         let prompt = format!(
-            "You are controlling retries for a Solana Jito bundle sender. \
+            "You are the bounded operational agent for a Solana Jito transaction stack. \
+             You do not sign transactions and cannot call Solana or Jito directly. \
+             The transaction is already signed; if can_refresh_blockhash=false or can_adjust_tip=false, \
+             do not choose retry as though those fields can be mutated. Escalate when a new signed transaction is needed. \
+             Choose exactly one action from submit_now, wait_for_leader, retry, abandon, escalate. \
              Return only JSON matching: \
-             {{\"action\":\"retry|hold|abort\",\"reason\":\"...\",\"refresh_blockhash\":true|false,\
-             \"tip_lamports\":123,\"max_wait_slots\":3,\"source\":\"openai\"}}.\n\
-             Evidence:\n{}",
+             {{\"action\":\"submit_now|wait_for_leader|retry|abandon|escalate\",\
+             \"reason\":\"...\",\"refresh_blockhash\":true|false,\"tip_lamports\":123,\
+             \"max_wait_slots\":3,\"source\":\"openai\"}}.\n\
+             Evidence and policy limits:\n{}",
             serde_json::to_string_pretty(ctx)?
         );
 
@@ -129,7 +159,7 @@ impl AiAgent {
             messages: vec![
                 Message {
                     role: "system",
-                    content: "Make one operational retry decision. Prefer retry only when the evidence identifies a fixable cause.".to_string(),
+                    content: "Make one bounded Solana transaction operation decision. Balance landing probability, tip cost, leader timing, and failure evidence. Do not invent tools or request private-key access.".to_string(),
                 },
                 Message {
                     role: "user",
@@ -157,67 +187,95 @@ impl AiAgent {
             .message
             .content
             .clone();
-        let mut decision: RetryDecision = serde_json::from_str(&content)?;
+        let mut decision: OperationalDecision = serde_json::from_str(&content)?;
         decision.source = "openai".to_string();
-        Ok(validate_decision(decision, ctx))
+        Ok(validate_operational_decision(decision, ctx))
     }
 
-    fn fallback_retry(&self, ctx: &AgentContext) -> RetryDecision {
-        let p75 = sol_to_lamports(ctx.tip.landed_tips_75th_percentile);
-        let p95 = sol_to_lamports(ctx.tip.landed_tips_95th_percentile);
-        let increased_tip = ctx.previous_tip_lamports.saturating_mul(125) / 100;
+    fn fallback_operation(&self, ctx: &OperationalContext) -> OperationalDecision {
+        let pressure = ctx
+            .slots_until_leader
+            .map(|slots| 1.0 - (slots as f64 / 3.0))
+            .unwrap_or(0.0);
+        let default_tip = self
+            .choose_tip_lamports(&ctx.recent_tip, pressure, ctx.tip_floor_lamports)
+            .min(ctx.max_tip_lamports);
 
-        match ctx.failure {
-            FailureKind::ExpiredBlockhash => RetryDecision {
-                action: RetryAction::Retry,
-                reason: "The observed failure is blockhash expiry, so the next attempt must rebuild with a fresh processed blockhash and a current Jito tip.".to_string(),
-                refresh_blockhash: true,
-                tip_lamports: increased_tip.max(p75).max(1_000),
-                max_wait_slots: 3,
-                source: "fallback_reasoner".to_string(),
-            },
-            FailureKind::FeeTooLow | FailureKind::BundleFailure => RetryDecision {
-                action: RetryAction::Retry,
-                reason: "The bundle was rejected or underbid, so retrying is reasonable only with a higher tip and the next Jito leader window.".to_string(),
-                refresh_blockhash: true,
-                tip_lamports: increased_tip.max(p95).max(1_000),
-                max_wait_slots: 4,
-                source: "fallback_reasoner".to_string(),
-            },
-            FailureKind::JitoRateLimited => RetryDecision {
-                action: RetryAction::Hold,
-                reason: "The block engine is rate limiting requests; holding avoids burning blockhash lifetime on immediate resubmission.".to_string(),
-                refresh_blockhash: true,
-                tip_lamports: increased_tip.max(p75).max(1_000),
-                max_wait_slots: 6,
-                source: "fallback_reasoner".to_string(),
-            },
-            FailureKind::ComputeExceeded | FailureKind::SimulationFailure => RetryDecision {
-                action: RetryAction::Abort,
-                reason: "The transaction itself failed simulation or compute constraints; tip and blockhash changes do not fix that class of failure.".to_string(),
+        if let Some(failure) = &ctx.failure {
+            match failure.failure {
+                FailureKind::ExpiredBlockhash => OperationalDecision {
+                    action: OperationalAction::Escalate,
+                    reason: "The signed transaction's blockhash expired and this agent cannot refresh or re-sign it; a new signed transaction is required.".to_string(),
+                    refresh_blockhash: false,
+                    tip_lamports: ctx.previous_tip_lamports.max(ctx.tip_floor_lamports),
+                    max_wait_slots: 0,
+                    source: "fallback_reasoner".to_string(),
+                },
+                FailureKind::ComputeExceeded | FailureKind::SimulationFailure => {
+                    OperationalDecision {
+                        action: OperationalAction::Abandon,
+                        reason: "The failure is transaction-shape related, not a timing or tip issue.".to_string(),
+                        refresh_blockhash: false,
+                        tip_lamports: ctx.previous_tip_lamports.max(ctx.tip_floor_lamports),
+                        max_wait_slots: 0,
+                        source: "fallback_reasoner".to_string(),
+                    }
+                }
+                FailureKind::FeeTooLow | FailureKind::BundleFailure => {
+                    let target_tip = sol_to_lamports(ctx.recent_tip.landed_tips_95th_percentile)
+                        .max(default_tip)
+                        .min(ctx.max_tip_lamports);
+                    OperationalDecision {
+                        action: OperationalAction::Escalate,
+                        reason: "The signed transaction appears underbid or dropped, but this agent cannot change its embedded tip; a newly signed transaction with a higher tip is required.".to_string(),
+                        refresh_blockhash: false,
+                        tip_lamports: target_tip,
+                        max_wait_slots: 0,
+                        source: "fallback_reasoner".to_string(),
+                    }
+                }
+                FailureKind::JitoRateLimited | FailureKind::Timeout | FailureKind::Unknown => {
+                    OperationalDecision {
+                        action: OperationalAction::WaitForLeader,
+                        reason: "The evidence is inconclusive or rate-limited; wait for fresher leader and tip data before another write.".to_string(),
+                        refresh_blockhash: false,
+                        tip_lamports: default_tip,
+                        max_wait_slots: 3,
+                        source: "fallback_reasoner".to_string(),
+                    }
+                }
+            }
+        } else if ctx.slots_until_leader.unwrap_or(u64::MAX) <= 3 {
+            OperationalDecision {
+                action: OperationalAction::SubmitNow,
+                reason: "A connected Jito leader is inside the near submission window.".to_string(),
                 refresh_blockhash: false,
-                tip_lamports: ctx.previous_tip_lamports,
-                max_wait_slots: 0,
-                source: "fallback_reasoner".to_string(),
-            },
-            FailureKind::Timeout | FailureKind::Unknown => RetryDecision {
-                action: RetryAction::Hold,
-                reason: "The evidence is inconclusive; waiting for fresher leader and tip data is safer than blind retry.".to_string(),
-                refresh_blockhash: true,
-                tip_lamports: increased_tip.max(p75).max(1_000),
+                tip_lamports: default_tip,
                 max_wait_slots: 3,
                 source: "fallback_reasoner".to_string(),
-            },
+            }
+        } else {
+            OperationalDecision {
+                action: OperationalAction::WaitForLeader,
+                reason: "No near connected Jito leader is available yet.".to_string(),
+                refresh_blockhash: false,
+                tip_lamports: default_tip,
+                max_wait_slots: 3,
+                source: "fallback_reasoner".to_string(),
+            }
         }
     }
 }
 
-fn validate_decision(mut decision: RetryDecision, ctx: &AgentContext) -> RetryDecision {
+fn validate_operational_decision(
+    mut decision: OperationalDecision,
+    ctx: &OperationalContext,
+) -> OperationalDecision {
     if decision.tip_lamports == 0 {
-        decision.tip_lamports = ctx.previous_tip_lamports.max(1_000);
+        decision.tip_lamports = ctx.tip_floor_lamports.max(ctx.previous_tip_lamports);
     }
-    if ctx.failure == FailureKind::ExpiredBlockhash {
-        decision.refresh_blockhash = true;
+    if !ctx.can_refresh_blockhash {
+        decision.refresh_blockhash = false;
     }
     decision
 }

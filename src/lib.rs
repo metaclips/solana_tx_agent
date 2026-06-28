@@ -9,6 +9,7 @@ pub mod agent;
 pub mod config;
 pub mod jito;
 pub mod lifecycle;
+pub mod mcp;
 pub mod networking;
+pub mod policy;
 pub mod stack;
-pub mod tx_factory;

@@ -7,27 +7,80 @@ use std::{
 };
 
 use anyhow::Context;
+use base64::Engine;
+use serde::{Deserialize, Serialize};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_commitment_config::CommitmentConfig;
-use solana_sdk::{hash::Hash, signature::Keypair};
+use solana_sdk::{hash::Hash, signature::Signature, transaction::VersionedTransaction};
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::{
-    agent::{AgentContext, AiAgent, RetryAction},
     config::Config,
-    jito::client::{BundleEvent, JitoClient, JitoConfig},
-    lifecycle::{CommitmentStage, FailureKind, LifecycleLogger, LifecycleRecord},
+    jito::{
+        client::{BundleEvent, JitoClient, JitoConfig},
+        tip::TipData,
+    },
+    lifecycle::{AgentAuditRecord, CommitmentStage, FailureKind, LifecycleLogger, LifecycleRecord},
     networking::{Geyser, GeyserStream},
-    tx_factory::{BuiltTransaction, TransactionFactory},
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkState {
+    pub current_slot: u64,
+    pub latest_blockhash_slot: Option<u64>,
+    pub next_jito_leader_slot: Option<u64>,
+    pub slots_until_jito_leader: Option<u64>,
+    pub recent_tip: TipData,
+    pub tip_floor_lamports: u64,
+    pub max_tip_lamports: u64,
+    pub leader_lookahead_slots: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlledSignedSubmitRequest {
+    pub submission_id: String,
+    pub attempt: u32,
+    pub encoded_transaction: String,
+    pub encoding: SignedTransactionEncoding,
+    pub wait_for_leader: bool,
+    pub max_wait_slots: Option<u64>,
+    pub observed_tip_lamports: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignedTransactionEncoding {
+    Base64,
+    Base58,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailureReport {
+    pub submission_id: String,
+    pub attempt: u32,
+    pub failure: FailureKind,
+    pub detail: String,
+    pub submitted_slot: Option<u64>,
+    pub leader_slot: Option<u64>,
+    pub blockhash: String,
+    pub tip_lamports: u64,
+    pub processed_latency_ms: Option<u128>,
+    pub confirmed_latency_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone)]
+struct SignedBundleTransaction {
+    transaction: VersionedTransaction,
+    signature: Signature,
+    blockhash: Hash,
+    tip_lamports: u64,
+}
 
 pub struct TxStack {
     config: Config,
     rpc: Arc<RpcClient>,
-    payer: Arc<Keypair>,
     jito: JitoClient,
-    agent: AiAgent,
     logger: LifecycleLogger,
     latest_slot: Arc<AtomicU64>,
     latest_blockhash: Arc<RwLock<Option<(u64, Hash)>>>,
@@ -35,7 +88,6 @@ pub struct TxStack {
 
 impl TxStack {
     pub async fn connect(config: Config) -> anyhow::Result<Self> {
-        let payer = Arc::new(config.payer_keypair()?);
         let jito_auth = Arc::new(config.jito_auth_keypair()?);
         let rpc = Arc::new(RpcClient::new_with_commitment(
             config.solana_rpc_url.clone(),
@@ -50,167 +102,70 @@ impl TxStack {
         .await?;
 
         let stack = Self {
-            agent: AiAgent::new(&config),
             logger: LifecycleLogger::new(config.lifecycle_log_path.clone()),
             latest_slot: Arc::new(AtomicU64::new(0)),
             latest_blockhash: Arc::new(RwLock::new(None)),
             config,
             rpc,
-            payer,
             jito,
         };
         stack.spawn_slot_stream();
         Ok(stack)
     }
 
-    pub async fn submit_many(
-        &self,
-        count: usize,
-        inject_expired_blockhash: bool,
-    ) -> anyhow::Result<()> {
-        for index in 0..count {
-            let submission_id =
-                format!("tx-agent-{}-{index}", chrono::Utc::now().timestamp_millis());
-            self.submit_with_agent_retry(submission_id, inject_expired_blockhash && index == 0)
-                .await?;
-        }
-        Ok(())
-    }
-
-    async fn submit_with_agent_retry(
-        &self,
-        submission_id: String,
-        inject_expired_blockhash: bool,
-    ) -> anyhow::Result<()> {
-        let mut attempt = 0u32;
-        let mut force_fresh_blockhash = !inject_expired_blockhash;
-        let mut previous_tip = 0u64;
-
-        loop {
-            let result = self
-                .submit_once(
-                    submission_id.clone(),
-                    attempt,
-                    inject_expired_blockhash && attempt == 0,
-                    force_fresh_blockhash,
-                    previous_tip,
-                )
-                .await?;
-
-            previous_tip = result.tip_lamports;
-            if result.is_terminal_success() || attempt >= 2 {
-                self.logger.append(&result).await?;
-                return Ok(());
-            }
-
-            let failure = result.failure.clone().unwrap_or(FailureKind::Unknown);
-            let tip = self.jito.tip_data().await;
-            let decision = self
-                .agent
-                .decide_retry(&AgentContext {
-                    submission_id: submission_id.clone(),
-                    attempt,
-                    failure: failure.clone(),
-                    failure_detail: result.failure_detail.clone().unwrap_or_default(),
-                    current_slot: Some(self.latest_slot.load(Ordering::Relaxed)),
-                    leader_slot: result.leader_slot,
-                    previous_tip_lamports: previous_tip,
-                    blockhash_age_slots: result.submitted_slot.map(|slot| {
-                        self.latest_slot
-                            .load(Ordering::Relaxed)
-                            .saturating_sub(slot)
-                    }),
-                    tip,
-                })
-                .await;
-
-            let mut decision_record = result.clone();
-            decision_record.agent_decision = Some(decision.clone());
-            self.logger.append(&decision_record).await?;
-
-            match decision.action {
-                RetryAction::Retry => {
-                    info!(
-                        "agent retrying submission {} after {:?}: {}",
-                        submission_id, failure, decision.reason
-                    );
-                    attempt += 1;
-                    force_fresh_blockhash = decision.refresh_blockhash;
-                    previous_tip = decision.tip_lamports;
-                }
-                RetryAction::Hold | RetryAction::Abort => {
-                    info!(
-                        "agent stopped submission {} after {:?}: {}",
-                        submission_id, failure, decision.reason
-                    );
-                    return Ok(());
-                }
-            }
+    pub async fn operational_state(&self) -> NetworkState {
+        let current_slot = self.latest_slot.load(Ordering::Relaxed);
+        let latest_blockhash_slot = self.latest_blockhash.read().await.map(|(slot, _)| slot);
+        let next = self.jito.next_leader_slot().await.map(|(slot, _)| slot);
+        NetworkState {
+            current_slot,
+            latest_blockhash_slot,
+            next_jito_leader_slot: next,
+            slots_until_jito_leader: next.map(|slot| slot.saturating_sub(current_slot)),
+            recent_tip: self.jito.tip_data().await,
+            tip_floor_lamports: self.config.tip_floor_lamports,
+            max_tip_lamports: self.config.max_agent_tip_lamports,
+            leader_lookahead_slots: self.config.leader_lookahead_slots,
         }
     }
 
-    async fn submit_once(
+    pub async fn submit_signed_encoded(
         &self,
-        submission_id: String,
-        attempt: u32,
-        inject_expired_blockhash: bool,
-        force_fresh_blockhash: bool,
-        requested_tip_lamports: u64,
+        request: ControlledSignedSubmitRequest,
     ) -> anyhow::Result<LifecycleRecord> {
         self.wait_for_slot().await;
 
-        let max_wait_slots = self.config.leader_lookahead_slots.saturating_mul(3).max(3);
-        let leader_slot = self
-            .jito
-            .wait_for_leader_window(self.config.leader_lookahead_slots, max_wait_slots)
-            .await?;
-
-        let tip_data = self.jito.tip_data().await;
-        let slot_pressure = self
-            .jito
-            .slots_until_next_leader()
-            .await
-            .map(|slots| 1.0 - (slots as f64 / self.config.leader_lookahead_slots.max(1) as f64))
-            .unwrap_or(0.0);
-        let tip_lamports = requested_tip_lamports.max(self.agent.choose_tip_lamports(
-            &tip_data,
-            slot_pressure,
-            self.config.tip_floor_lamports,
-        ));
-
-        let (blockhash, last_valid_block_height) = if inject_expired_blockhash {
-            (Hash::default(), None)
-        } else if force_fresh_blockhash {
-            let (blockhash, last_valid_block_height) = self
-                .rpc
-                .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
-                .await
-                .context("failed fetching processed blockhash")?;
-            (blockhash, Some(last_valid_block_height))
+        let leader_slot = if request.wait_for_leader {
+            self.jito
+                .wait_for_leader_window(
+                    self.config.leader_lookahead_slots,
+                    request
+                        .max_wait_slots
+                        .unwrap_or(self.config.max_agent_wait_slots),
+                )
+                .await?
         } else {
-            self.current_blockhash()
-                .await
-                .map(|(_, hash)| (hash, None))
-                .unwrap_or_else(|| (Hash::default(), None))
+            self.jito.next_leader_slot().await.map(|(slot, _)| slot)
         };
 
-        let tip_account = self.jito.tip_account().await;
-        let factory = TransactionFactory::new(tip_account, self.config.self_transfer_lamports);
-        let built = factory.build(&self.payer, blockhash, tip_lamports)?;
+        let built = decode_signed_transaction(
+            &request.encoded_transaction,
+            &request.encoding,
+            request.observed_tip_lamports.unwrap_or(0),
+        )?;
         let mut record = LifecycleRecord::new(
-            submission_id,
-            attempt,
+            request.submission_id,
+            request.attempt,
             built.signature,
             built.tip_lamports,
             Some(self.latest_slot.load(Ordering::Relaxed)),
             leader_slot,
             built.blockhash.to_string(),
-            last_valid_block_height,
+            None,
         );
 
         let bundle_events = self.jito.subscribe_bundle_events();
-        let send_result = self.jito.send_bundle(&built.transaction).await;
-        match send_result {
+        match self.jito.send_bundle(&built.transaction).await {
             Ok(sent) => {
                 record.bundle_id = Some(sent.bundle_id.clone());
                 record.add_stage(
@@ -229,10 +184,34 @@ impl TxStack {
         Ok(self.wait_for_lifecycle(record, built, bundle_events).await)
     }
 
+    pub async fn log_lifecycle(&self, record: &LifecycleRecord) -> anyhow::Result<()> {
+        self.logger.append(record).await
+    }
+
+    pub async fn log_agent_audit(&self, record: &AgentAuditRecord) -> anyhow::Result<()> {
+        self.logger.append_agent_audit(record).await
+    }
+
+    pub fn failure_report(record: &LifecycleRecord) -> Option<FailureReport> {
+        let failure = record.failure.clone()?;
+        Some(FailureReport {
+            submission_id: record.submission_id.clone(),
+            attempt: record.attempt,
+            failure,
+            detail: record.failure_detail.clone().unwrap_or_default(),
+            submitted_slot: record.submitted_slot,
+            leader_slot: record.leader_slot,
+            blockhash: record.blockhash.clone(),
+            tip_lamports: record.tip_lamports,
+            processed_latency_ms: record.processed_latency_ms,
+            confirmed_latency_ms: record.confirmed_latency_ms,
+        })
+    }
+
     async fn wait_for_lifecycle(
         &self,
         mut record: LifecycleRecord,
-        built: BuiltTransaction,
+        built: SignedBundleTransaction,
         mut bundle_events: tokio::sync::broadcast::Receiver<BundleEvent>,
     ) -> LifecycleRecord {
         let mut signature_events = self.spawn_signature_status_stream(built.signature);
@@ -340,11 +319,7 @@ impl TxStack {
         }
     }
 
-    async fn apply_rpc_commitments(
-        &self,
-        record: &mut LifecycleRecord,
-        signature: solana_sdk::signature::Signature,
-    ) {
+    async fn apply_rpc_commitments(&self, record: &mut LifecycleRecord, signature: Signature) {
         self.apply_rpc_commitment(
             record,
             signature,
@@ -371,7 +346,7 @@ impl TxStack {
     async fn apply_rpc_commitment(
         &self,
         record: &mut LifecycleRecord,
-        signature: solana_sdk::signature::Signature,
+        signature: Signature,
         stage: CommitmentStage,
         commitment: CommitmentConfig,
     ) {
@@ -394,7 +369,7 @@ impl TxStack {
 
     fn spawn_signature_status_stream(
         &self,
-        signature: solana_sdk::signature::Signature,
+        signature: Signature,
     ) -> tokio::sync::mpsc::UnboundedReceiver<GeyserStream> {
         let (send, receive) = tokio::sync::mpsc::unbounded_channel();
         let geyser = Arc::new(Geyser { stream: send });
@@ -446,8 +421,40 @@ impl TxStack {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
+}
 
-    async fn current_blockhash(&self) -> Option<(u64, Hash)> {
-        *self.latest_blockhash.read().await
-    }
+fn decode_signed_transaction(
+    encoded_transaction: &str,
+    encoding: &SignedTransactionEncoding,
+    observed_tip_lamports: u64,
+) -> anyhow::Result<SignedBundleTransaction> {
+    let bytes = match encoding {
+        SignedTransactionEncoding::Base64 => base64::engine::general_purpose::STANDARD
+            .decode(encoded_transaction.trim())
+            .context("failed to decode base64 signed transaction")?,
+        SignedTransactionEncoding::Base58 => bs58::decode(encoded_transaction.trim())
+            .into_vec()
+            .context("failed to decode base58 signed transaction")?,
+    };
+    let transaction: VersionedTransaction =
+        bincode::deserialize(&bytes).context("failed to deserialize signed transaction")?;
+    transaction
+        .sanitize()
+        .context("signed transaction failed sanitization")?;
+    transaction
+        .verify_and_hash_message()
+        .context("signed transaction signature verification failed")?;
+
+    let signature: Signature = *transaction
+        .signatures
+        .first()
+        .context("signed transaction has no signatures")?;
+    let blockhash = *transaction.message.recent_blockhash();
+
+    Ok(SignedBundleTransaction {
+        transaction,
+        signature,
+        blockhash,
+        tip_lamports: observed_tip_lamports,
+    })
 }

@@ -1,17 +1,9 @@
-use std::{
-    fs::{File, OpenOptions},
-    io::{BufRead, BufReader, Write},
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use std::{fs::OpenOptions, io::Write, path::PathBuf, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use solana_sdk::signature::Signature;
 use tokio::sync::Mutex;
-
-use crate::agent::RetryDecision;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CommitmentStage {
@@ -88,7 +80,6 @@ pub struct LifecycleRecord {
     pub finalized_latency_ms: Option<u128>,
     pub failure: Option<FailureKind>,
     pub failure_detail: Option<String>,
-    pub agent_decision: Option<RetryDecision>,
     pub events: Vec<StageEvent>,
 }
 
@@ -126,7 +117,6 @@ impl LifecycleRecord {
             finalized_latency_ms: None,
             failure: None,
             failure_detail: None,
-            agent_decision: None,
             events: vec![StageEvent {
                 stage: CommitmentStage::Submitted,
                 at: now,
@@ -194,6 +184,17 @@ pub struct LifecycleLogger {
     lock: Arc<Mutex<()>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentAuditRecord {
+    pub request_id: String,
+    pub attempt: u32,
+    pub at: DateTime<Utc>,
+    pub input_state: serde_json::Value,
+    pub decision: serde_json::Value,
+    pub policy: serde_json::Value,
+    pub outcome: Option<serde_json::Value>,
+}
+
 impl LifecycleLogger {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
@@ -218,24 +219,22 @@ impl LifecycleLogger {
         Ok(())
     }
 
-    pub fn print(path: &Path) -> anyhow::Result<()> {
-        let file = File::open(path)?;
-        for line in BufReader::new(file).lines() {
-            let line = line?;
-            let record: LifecycleRecord = serde_json::from_str(&line)?;
-            println!(
-                "{} attempt={} sig={} bundle={:?} tip={} processed={:?} confirmed={:?} finalized={:?} failure={:?}",
-                record.submission_id,
-                record.attempt,
-                record.signature,
-                record.bundle_id,
-                record.tip_lamports,
-                record.processed_latency_ms,
-                record.confirmed_latency_ms,
-                record.finalized_latency_ms,
-                record.failure
-            );
+    pub async fn append_agent_audit(&self, record: &AgentAuditRecord) -> anyhow::Result<()> {
+        let _guard = self.lock.lock().await;
+        let audit_path = self.path.with_file_name("agent_decisions.log.jsonl");
+        if let Some(parent) = audit_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            tokio::fs::create_dir_all(parent).await?;
         }
+        let json = serde_json::to_string(record)?;
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(audit_path)?;
+            writeln!(file, "{json}")?;
+            Ok(())
+        })
+        .await??;
         Ok(())
     }
 }
