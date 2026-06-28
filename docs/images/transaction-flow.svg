@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title id="title">Transaction flow</title>
+  <desc id="desc">End-to-end transaction flow from a pre-signed payload through agent_host, agent_mcp, TxStack, Jito, network observers, and report output.</desc>
+  <defs>
+    <style>
+      text{font-family:Inter,Segoe UI,Arial,sans-serif}.bg{fill:#f6f8fb}.h1{font-size:30px;font-weight:750;fill:#111827}.sub{font-size:15px;fill:#5b6575}
+      .stage{fill:#fff;stroke:#cbd5e1;stroke-width:1.5;rx:14}.label{font-size:17px;font-weight:750;fill:#111827}.body{font-size:13px;fill:#475569}.step{font-size:12px;font-weight:750;fill:#fff}
+      .num{fill:#0f172a}.blue{fill:#2563eb}.green{fill:#059669}.gold{fill:#d97706}.red{fill:#dc2626}
+      .arrow{fill:none;stroke:#334155;stroke-width:2.2;marker-end:url(#arrow)}.thin{fill:none;stroke:#94a3b8;stroke-width:1.6;marker-end:url(#arrow)}
+      .feed{fill:#fff;stroke:#d8dee9;stroke-width:1.4;rx:14}.chip{font-size:12.5px;font-weight:700;fill:#334155}
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0 0 10 4 0 8z" fill="#334155"/></marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="675"/>
+  <text class="h1" x="48" y="58">Transaction Flow</text>
+  <text class="sub" x="48" y="84">A pre-signed payload travels through a narrow control plane and becomes auditable lifecycle evidence.</text>
+
+  <g transform="translate(55 160)">
+    <rect class="stage" width="160" height="118"/>
+    <circle class="blue" cx="26" cy="28" r="15"/><text class="step" x="21" y="33">1</text>
+    <text class="label" x="54" y="34">Signed tx</text>
+    <text class="body" x="26" y="70">Created outside</text><text class="body" x="26" y="91">the agent boundary</text>
+  </g>
+  <g transform="translate(270 160)">
+    <rect class="stage" width="160" height="118"/>
+    <circle class="blue" cx="26" cy="28" r="15"/><text class="step" x="21" y="33">2</text>
+    <text class="label" x="54" y="34">agent_host</text>
+    <text class="body" x="26" y="70">Requests state</text><text class="body" x="26" y="91">and decides action</text>
+  </g>
+  <g transform="translate(485 160)">
+    <rect class="stage" width="160" height="118"/>
+    <circle class="green" cx="26" cy="28" r="15"/><text class="step" x="21" y="33">3</text>
+    <text class="label" x="54" y="34">agent_mcp</text>
+    <text class="body" x="26" y="70">Controlled MCP</text><text class="body" x="26" y="91">write surface</text>
+  </g>
+  <g transform="translate(700 160)">
+    <rect class="stage" width="160" height="118"/>
+    <circle class="green" cx="26" cy="28" r="15"/><text class="step" x="21" y="33">4</text>
+    <text class="label" x="54" y="34">TxStack</text>
+    <text class="body" x="26" y="70">Verify, submit,</text><text class="body" x="26" y="91">track lifecycle</text>
+  </g>
+  <g transform="translate(915 160)">
+    <rect class="stage" width="160" height="118"/>
+    <circle class="gold" cx="26" cy="28" r="15"/><text class="step" x="21" y="33">5</text>
+    <text class="label" x="54" y="34">Jito</text>
+    <text class="body" x="26" y="70">Bundle submit</text><text class="body" x="26" y="91">and result feed</text>
+  </g>
+
+  <path class="arrow" d="M215 219h50"/><path class="arrow" d="M430 219h50"/><path class="arrow" d="M645 219h50"/><path class="arrow" d="M860 219h50"/>
+
+  <rect class="feed" x="180" y="410" width="210" height="86"/>
+  <text class="label" x="208" y="442">Yellowstone / Geyser</text><text class="body" x="208" y="468">Slots and signature status</text>
+  <rect class="feed" x="495" y="410" width="210" height="86"/>
+  <text class="label" x="523" y="442">Solana RPC</text><text class="body" x="523" y="468">Commitment fallback</text>
+  <rect class="feed" x="810" y="410" width="210" height="86"/>
+  <text class="label" x="838" y="442">Report output</text><text class="body" x="838" y="468">Lifecycle JSONL + JSON report</text>
+
+  <path class="thin" d="M780 278c-115 80-210 118-390 132"/>
+  <path class="thin" d="M785 278c-65 74-91 102-88 132"/>
+  <path class="arrow" d="M916 278v126"/>
+  <path class="thin" d="M390 453h98"/><path class="thin" d="M705 453h98"/>
+
+  <rect class="feed" x="55" y="565" width="1020" height="54"/>
+  <text class="chip" x="85" y="599">Every report record preserves request id, signature, slot evidence, commitment progression, tip metadata, lifecycle events, and failure classification when applicable.</text>
+</svg>

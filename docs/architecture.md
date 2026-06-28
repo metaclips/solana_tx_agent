@@ -1,10 +1,14 @@
 # tx_agent Architecture
 
-This document is the source draft for the public architecture document. Publish this content to Notion, Google Docs, Figma, or GitHub Pages and include the public URL in the final submission.
+This document describes the architecture behind `tx_agent`, the Solana smart transaction stack built for the Superteam Advanced Infrastructure Challenge.
 
 ## System Overview
 
 `tx_agent` is an MCP-based transaction control plane for Solana. It observes network state through Yellowstone/Geyser, times submissions around connected Jito leaders, sends real Jito bundles, tracks lifecycle progression, classifies failures, and delegates one bounded operational decision to a client-side decision host.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/metaclips/solana_tx_agent/main/docs/images/system-overview.svg" alt="tx_agent system overview" width="100%">
+</p>
 
 The core design principle is separation of authority:
 
@@ -14,6 +18,14 @@ The core design principle is separation of authority:
 - Decisions and outcomes are logged for audit.
 
 The MCP server and client are implemented with the official `modelcontextprotocol/rust-sdk` Rust crate, published as `rmcp`. The server uses MCP streamable HTTP at `/mcp`; the client host connects with `rmcp::transport::StreamableHttpClientTransport`.
+
+## Why MCP
+
+MCP was chosen because the project needs a narrow, inspectable boundary between the agent and the transaction infrastructure. The agent should be able to ask for live network state, evaluate leader timing, reason about tip data, and decide whether to submit or escalate. It should not directly hold signing authority or talk to Solana and Jito infrastructure on its own.
+
+With MCP, `agent_mcp` owns the infrastructure and exposes a small list of tools. `agent_host` consumes those tools as a client. That means the tool contract is explicit, the write surface is limited, and every call can be logged against a submission ID. This is a better fit than giving the decision layer direct SDK access, because direct access would make it harder to prove what the agent was allowed to do.
+
+The result is a practical safety model: the agent can make operational decisions, while the server remains responsible for verification, submission, lifecycle tracking, and failure classification.
 
 ## Components
 
@@ -146,6 +158,10 @@ The policy engine validates decision output before any write tool executes:
 
 ## Data Flow
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/metaclips/solana_tx_agent/main/docs/images/transaction-flow.svg" alt="Transaction flow" width="100%">
+</p>
+
 1. `agent_host` receives an already signed encoded transaction request.
 2. `agent_host` connects to the already running `agent_mcp` HTTP MCP endpoint.
 3. `agent_mcp` has already started `TxStack`.
@@ -163,6 +179,10 @@ The policy engine validates decision output before any write tool executes:
 15. If failure is retryable and policy allows it, the decision layer chooses whether to retry, wait, abandon, or escalate.
 
 ## Failure Handling
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/metaclips/solana_tx_agent/main/docs/images/failure-handling-strategy.svg" alt="Failure handling strategy" width="100%">
+</p>
 
 Classified failures:
 
@@ -189,37 +209,16 @@ Compute and simulation failures default to abandon because blockhash/tip changes
 - Lifecycle evidence is append-only JSONL for auditability.
 - Decision-host records are written to `agent_decisions.log.jsonl`.
 
-## Suggested Diagram
+## Additional Diagrams
 
-```text
-          +---------------------+
-          |  MCP Client         |
-          |  agent_host         |
-          +----+-----------+----+
-               |           |
-               v           v
-        +----------+   +-------------+
-        | Decision |   | Policy      |
-        | Engine   |   | Validator   |
-        +-----+----+   +------+------+
-              |               |
-              +-------+-------+
-                      |
-                      v
-          +---------------------+
-          | MCP Server          |
-          | agent_mcp           |
-          +----+------------+---+
-               |            |
-               v            v
-       +--------------+   +----------------+
-       | Yellowstone  |   | Jito Client    |
-       | Slot/Status  |   | Leaders/Bundle |
-       +------+-------+   +---+------------+
-              |               |
-              v               v
-        +-----------+   +-------------+
-        | Lifecycle |<--| Bundle Feed |
-        | Logger    |   +-------------+
-        +-----------+
-```
+<p align="center">
+  <img src="https://raw.githubusercontent.com/metaclips/solana_tx_agent/main/docs/images/mcp-agent-flow.svg" alt="MCP agent flow" width="100%">
+</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/metaclips/solana_tx_agent/main/docs/images/jito-bundle-lifecycle.svg" alt="Jito bundle submission lifecycle" width="100%">
+</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/metaclips/solana_tx_agent/main/docs/images/report-results.svg" alt="Hackathon report results" width="100%">
+</p>

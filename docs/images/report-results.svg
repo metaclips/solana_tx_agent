@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title id="title">Hackathon report results</title>
+  <desc id="desc">Summary of hackathon_report.json with 10 total submissions, 7 successes, 3 failures, 10 records with slots, 10 records with commitment progression, and 9 expected outcomes met.</desc>
+  <defs>
+    <style>
+      text{font-family:Inter,Segoe UI,Arial,sans-serif}.bg{fill:#f6f8fb}.h1{font-size:30px;font-weight:750;fill:#111827}.sub{font-size:15px;fill:#5b6575}
+      .card{fill:#fff;stroke:#d8dee9;stroke-width:1.5;rx:16}.green{stroke:#059669}.red{stroke:#dc2626}.blue{stroke:#2563eb}.gold{stroke:#d97706}
+      .num{font-size:46px;font-weight:800;fill:#111827}.label{font-size:16px;font-weight:750;fill:#111827}.body{font-size:13px;fill:#475569}.small{font-size:12px;fill:#64748b}
+      .barbg{fill:#e2e8f0}.barok{fill:#059669}.barbad{fill:#dc2626}.line{stroke:#e2e8f0;stroke-width:1}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1200" height="675"/>
+  <text class="h1" x="48" y="58">Hackathon Report Results</text>
+  <text class="sub" x="48" y="84">reports/hackathon_report.json - run hackathon-1782676444321 - generated 2026-06-28T19:56:17.201473Z</text>
+
+  <rect class="card blue" x="70" y="135" width="240" height="128"/><text class="num" x="100" y="198">10</text><text class="label" x="100" y="230">Total submissions</text><text class="body" x="100" y="250">Live submission records</text>
+  <rect class="card green" x="350" y="135" width="240" height="128"/><text class="num" x="380" y="198">7</text><text class="label" x="380" y="230">Observed successes</text><text class="body" x="380" y="250">Passed normal lifecycle</text>
+  <rect class="card red" x="630" y="135" width="240" height="128"/><text class="num" x="660" y="198">3</text><text class="label" x="660" y="230">Classifier flags</text><text class="body" x="660" y="250">2 failures + 1 Jito duplicate</text>
+  <rect class="card gold" x="910" y="135" width="240" height="128"/><text class="num" x="940" y="198">9</text><text class="label" x="940" y="230">Outcomes met</text><text class="body" x="940" y="250">Out of 10 expected</text>
+
+  <rect class="card" x="70" y="330" width="500" height="220"/>
+  <text class="label" x="100" y="368">Outcome split</text>
+  <rect class="barbg" x="100" y="405" width="410" height="34" rx="8"/>
+  <rect class="barok" x="100" y="405" width="287" height="34" rx="8"/>
+  <rect class="barbad" x="387" y="405" width="123" height="34" rx="8"/>
+  <text class="body" x="100" y="472">7 passed transactions reached normal lifecycle progression.</text>
+  <text class="body" x="100" y="500">2 planned unfunded transactions failed as InsufficientFunds.</text>
+  <text class="body" x="100" y="528">1 landed bundle later returned a Jito regional AlreadyProcessed signal.</text>
+
+  <rect class="card" x="630" y="330" width="500" height="220"/>
+  <text class="label" x="660" y="368">Evidence completeness</text>
+  <line class="line" x1="660" y1="390" x2="1095" y2="390"/>
+  <text class="num" x="660" y="454">10 / 10</text>
+  <text class="body" x="660" y="486">records include slot evidence</text>
+  <text class="body" x="660" y="512">records include commitment progression</text>
+  <text class="body" x="660" y="538">failures include classification and raw detail</text>
+
+  <text class="small" x="70" y="620">The useful result is not a flat success/failure count. The stack separates failures from Jito duplicate/reprocessing signals.</text>
+</svg>

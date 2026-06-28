@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title id="title">MCP agent flow</title>
+  <desc id="desc">MCP flow showing the client decision host querying live state, validating policy, and invoking controlled server tools.</desc>
+  <defs>
+    <style>
+      text{font-family:Inter,Segoe UI,Arial,sans-serif}.bg{fill:#f6f8fb}.h1{font-size:30px;font-weight:750;fill:#111827}.sub{font-size:15px;fill:#5b6575}
+      .lane{fill:#fff;stroke:#d8dee9;stroke-width:1.5;rx:18}.laneTitle{font-size:13px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;fill:#64748b}
+      .box{fill:#fff;stroke:#cbd5e1;stroke-width:1.4;rx:14}.client{stroke:#2563eb}.server{stroke:#059669}.policy{stroke:#d97706}.evidence{stroke:#dc2626}
+      .label{font-size:17px;font-weight:750;fill:#111827}.body{font-size:13px;fill:#475569}.pill{fill:#eef2ff;stroke:#c7d2fe;rx:20}.pillText{font-size:12.5px;font-weight:750;fill:#3730a3}
+      .arrow{fill:none;stroke:#334155;stroke-width:2.2;marker-end:url(#arrow)}.dashed{fill:none;stroke:#94a3b8;stroke-width:1.7;stroke-dasharray:6 6;marker-end:url(#arrow)}
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0 0 10 4 0 8z" fill="#334155"/></marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="675"/>
+  <text class="h1" x="48" y="58">MCP Agent Flow</text>
+  <text class="sub" x="48" y="84">The agent makes one bounded operational decision, then the MCP server performs the controlled network operation.</text>
+
+  <rect class="lane" x="55" y="130" width="500" height="430"/>
+  <text class="laneTitle" x="85" y="166">agent_host - client</text>
+  <rect class="box client" x="95" y="210" width="180" height="92"/>
+  <text class="label" x="120" y="244">Receive payload</text><text class="body" x="120" y="270">Signed transaction</text><text class="body" x="120" y="290">and tip metadata</text>
+  <rect class="box client" x="335" y="210" width="180" height="92"/>
+  <text class="label" x="360" y="244">Query state</text><text class="body" x="360" y="270">Slot, leader window,</text><text class="body" x="360" y="290">recent tip data</text>
+  <rect class="box client" x="95" y="385" width="180" height="100"/>
+  <text class="label" x="120" y="419">Decide</text><text class="body" x="120" y="445">submit, wait, retry,</text><text class="body" x="120" y="466">abandon, escalate</text>
+  <rect class="box policy" x="335" y="385" width="180" height="100"/>
+  <text class="label" x="360" y="419">Validate policy</text><text class="body" x="360" y="445">Clamp waits and tips;</text><text class="body" x="360" y="466">reject unsafe writes</text>
+
+  <rect class="lane" x="645" y="130" width="500" height="430"/>
+  <text class="laneTitle" x="675" y="166">agent_mcp - server</text>
+  <rect class="box server" x="685" y="210" width="180" height="92"/>
+  <text class="label" x="710" y="244">Read tools</text><text class="body" x="710" y="270">network state</text><text class="body" x="710" y="290">recent tips</text>
+  <rect class="box server" x="925" y="210" width="180" height="92"/>
+  <text class="label" x="940" y="244">Write tool</text><text class="body" x="940" y="270">submit_signed_bundle</text><text class="body" x="940" y="290">verify and submit</text>
+  <rect class="box server" x="685" y="385" width="180" height="100"/>
+  <text class="label" x="710" y="419">Live infra</text><text class="body" x="710" y="445">Jito, Yellowstone,</text><text class="body" x="710" y="466">Solana RPC</text>
+  <rect class="box evidence" x="925" y="385" width="180" height="100"/>
+  <text class="label" x="940" y="419">Audit output</text><text class="body" x="940" y="445">Lifecycle records</text><text class="body" x="940" y="466">and decision logs</text>
+
+  <path class="arrow" d="M275 256h55"/><path class="arrow" d="M425 302v78"/><path class="arrow" d="M335 435h-55"/>
+  <path class="arrow" d="M515 435c64 0 91-46 166-161"/>
+  <text class="body" x="555" y="394">MCP read calls</text>
+  <path class="arrow" d="M515 455c150 48 278 13 395-181"/>
+  <text class="body" x="620" y="501">controlled write call</text>
+  <path class="arrow" d="M865 256h55"/><path class="arrow" d="M1015 302v78"/><path class="arrow" d="M925 435h-55"/><path class="dashed" d="M775 385v-78"/>
+
+  <rect class="pill" x="275" y="594" width="650" height="40"/>
+  <text class="pillText" x="304" y="620">Guardrail: the agent cannot access keys, sign, mutate instructions, refresh blockhashes, or call Solana/Jito directly.</text>
+</svg>

@@ -91,47 +91,26 @@ cargo run --bin agent_host -- \
 
 ## Architecture Document
 
-The submission requires a public architecture document hosted separately from this GitHub repository.
+The submission-ready architecture and hackathon write-up lives in this repository:
 
-Public architecture document: **TODO: replace with your public Figma, Notion, Google Docs, or other public URL before submission.**
+- [docs/hackathon_submission.md](https://github.com/metaclips/solana_tx_agent/blob/main/docs/hackathon_submission.md)
 
-That external document should cover:
+The graphical assets used by the README and submission document are all SVG files:
 
-- System architecture
-- Key components
-- Data flow between services
-- Infrastructure decisions
-- Failure handling strategy
-- Decision-layer responsibilities
-- Diagrams and deployment notes
+- [System overview](https://github.com/metaclips/solana_tx_agent/blob/main/docs/images/system-overview.svg)
+- [Transaction flow](https://github.com/metaclips/solana_tx_agent/blob/main/docs/images/transaction-flow.svg)
+- [MCP agent flow](https://github.com/metaclips/solana_tx_agent/blob/main/docs/images/mcp-agent-flow.svg)
+- [Jito bundle submission lifecycle](https://github.com/metaclips/solana_tx_agent/blob/main/docs/images/jito-bundle-lifecycle.svg)
+- [Failure handling strategy](https://github.com/metaclips/solana_tx_agent/blob/main/docs/images/failure-handling-strategy.svg)
+- [Hackathon report results](https://github.com/metaclips/solana_tx_agent/blob/main/docs/images/report-results.svg)
 
-The repository implementation is summarized below, but the externally hosted document is the separately judged architecture submission.
+The repository implementation is summarized below.
 
 ## System Overview
 
-```mermaid
-flowchart LR
-    Signer[Upstream Signer<br/>funded keypair or external signing stack]
-    Host[agent_host<br/>decision client host]
-    MCP[agent_mcp<br/>MCP control plane]
-    Stack[TxStack<br/>core lifecycle stack]
-    Jito[Jito Block Engine<br/>bundle submission/results]
-    Geyser[Yellowstone/Geyser<br/>slots + signature status]
-    RPC[Solana RPC<br/>commitment fallback]
-    Logs[(Lifecycle JSONL<br/>Agent audit JSONL)]
-    Report[(hackathon_report.json)]
-
-    Signer -->|pre-signed base64/base58 tx| Host
-    Host -->|get_network_state| MCP
-    Host -->|submit_signed_bundle| MCP
-    MCP --> Stack
-    Stack -->|send_bundle| Jito
-    Jito -->|accepted/dropped/finalized events| Stack
-    Geyser -->|slots/blockhash/status| Stack
-    RPC -->|processed/confirmed/finalized status fallback| Stack
-    Stack --> Logs
-    Logs --> Report
-```
+<p align="center">
+  <img src="https://raw.githubusercontent.com/metaclips/solana_tx_agent/main/docs/images/system-overview.svg" alt="tx_agent system overview" width="100%">
+</p>
 
 The project separates core infrastructure from decision orchestration:
 
@@ -152,35 +131,25 @@ The project separates core infrastructure from decision orchestration:
 | `Geyser` | Streams live slots, blockhashes, and signature status from Yellowstone/Geyser. |
 | `hackathon_report` | Starts the MCP server, generates live transaction cases, runs the agent, and writes the final JSON report. |
 
-## Data Flow
+## Why MCP
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant S as Upstream Signer / Report Generator
-    participant H as agent_host
-    participant M as agent_mcp
-    participant T as TxStack
-    participant J as Jito
-    participant G as Yellowstone/Geyser
-    participant R as Solana RPC
-    participant L as Lifecycle Log
+MCP gives the project a clean boundary between the decision layer and the infrastructure layer. That matters here because the agent should be able to reason about timing, leaders, tips, retries, and failure evidence, but it should not have direct wallet or network authority.
 
-    S->>H: signed transaction + observed tip
-    H->>M: get_network_state
-    M->>T: read live state
-    T-->>M: slot, leader window, tips, limits
-    M-->>H: network state
-    H->>H: decision engine + policy validation
-    H->>M: submit_signed_bundle
-    M->>T: verify and submit unchanged tx
-    T->>J: send_bundle
-    J-->>T: bundle id / bundle result events
-    G-->>T: slot + signature status stream
-    R-->>T: commitment status fallback
-    T->>L: lifecycle JSONL entry
-    M-->>H: lifecycle record + failure report
-```
+In this stack, `agent_host` is the MCP client and `agent_mcp` is the MCP server. The client asks for live state and makes a bounded operational decision. The server owns Solana RPC, Yellowstone/Geyser, Jito access, bundle submission, lifecycle tracking, and failure classification. That split keeps the write surface small, auditable, and easier to test.
+
+MCP also makes the tool contract explicit. The server exposes only the operations the agent is allowed to use: read network state, read recent tip data, classify failures, submit an already signed bundle, and record the decision. The agent cannot invent new powers at runtime, call Jito directly, sign transactions, mutate instructions, or refresh blockhashes.
+
+## Transaction Flow
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/metaclips/solana_tx_agent/main/docs/images/transaction-flow.svg" alt="Transaction flow" width="100%">
+</p>
+
+## MCP Agent Flow
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/metaclips/solana_tx_agent/main/docs/images/mcp-agent-flow.svg" alt="MCP agent flow" width="100%">
+</p>
 
 ## Infrastructure Decisions
 
@@ -191,23 +160,17 @@ sequenceDiagram
 - Lifecycle records are append-only JSONL so the raw evidence is easy to inspect and preserve.
 - `hackathon_report` embeds the raw lifecycle records into a final JSON report for judging.
 
+## Jito Bundle Lifecycle
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/metaclips/solana_tx_agent/main/docs/images/jito-bundle-lifecycle.svg" alt="Jito bundle submission lifecycle" width="100%">
+</p>
+
 ## Failure Handling Strategy
 
-```mermaid
-flowchart TD
-    Fail[Failure observed] --> Classify[Classify raw Solana/Jito detail]
-    Classify --> Expired[Expired blockhash]
-    Classify --> Fee[Fee too low / underbid]
-    Classify --> Compute[Compute or simulation failure]
-    Classify --> Rate[Jito rate limit]
-    Classify --> Timeout[Timeout / inconclusive]
-
-    Expired --> Escalate[Escalate for a newly signed transaction]
-    Fee --> EscalateTip[Escalate for new signed transaction with higher embedded tip]
-    Compute --> Abandon[Abandon transaction shape]
-    Rate --> Wait[Wait for leader/tip data before retrying]
-    Timeout --> Wait
-```
+<p align="center">
+  <img src="https://raw.githubusercontent.com/metaclips/solana_tx_agent/main/docs/images/failure-handling-strategy.svg" alt="Failure handling strategy" width="100%">
+</p>
 
 The signature boundary controls recovery. If a blockhash expires or a higher tip is required, this agent cannot repair the transaction in-place. It must escalate to an upstream signer for a new signed payload.
 
@@ -272,13 +235,13 @@ Report fields relevant to judging:
 
 Required environment:
 
-```sh
-export YELLOWSTONE_ENDPOINT="https://your-yellowstone-endpoint"
-export YELLOWSTONE_TOKEN="optional-token"
-export SOLANA_RPC_URL="https://your-rpc"
-export JITO_AUTH_KEYPAIR="$HOME/.config/solana/jito-auth.json"
-export TX_AGENT_REAL_PAYER_KEYPAIR="$HOME/.config/solana/funded-payer.json"
-```
+| Variable | Value expected |
+| --- | --- |
+| `YELLOWSTONE_ENDPOINT` | Yellowstone/Geyser gRPC endpoint used for slot, blockhash, and signature-status streaming. |
+| `YELLOWSTONE_TOKEN` | Provider token when the Yellowstone endpoint requires one. Leave unset when the endpoint does not require a token. |
+| `SOLANA_RPC_URL` | Solana RPC endpoint used for blockhash and commitment fallback checks. |
+| `JITO_AUTH_KEYPAIR` | Path to the Jito auth keypair JSON file. |
+| `TX_AGENT_REAL_PAYER_KEYPAIR` | Path to the funded payer keypair used only for live report generation. |
 
 `JITO_AUTH_KEYPAIR` must point to a 32-byte seed JSON array used with `Keypair::from_seed`. `TX_AGENT_REAL_PAYER_KEYPAIR` should be a funded Solana keypair used only by the report generator to build successful live transaction cases.
 

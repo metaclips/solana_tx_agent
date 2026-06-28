@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title id="title">Jito bundle submission lifecycle</title>
+  <desc id="desc">Lifecycle of a Jito bundle from signed transaction verification to bundle submission, acceptance, leader forwarding, processed, confirmed, finalized, and failure classification.</desc>
+  <defs>
+    <style>
+      text{font-family:Inter,Segoe UI,Arial,sans-serif}.bg{fill:#f6f8fb}.h1{font-size:30px;font-weight:750;fill:#111827}.sub{font-size:15px;fill:#5b6575}
+      .box{fill:#fff;stroke:#cbd5e1;stroke-width:1.5;rx:14}.ok{stroke:#059669}.warn{stroke:#d97706}.bad{stroke:#dc2626}.label{font-size:16.5px;font-weight:750;fill:#111827}.body{font-size:13px;fill:#475569}.tiny{font-size:12px;fill:#64748b}
+      .arrow{fill:none;stroke:#334155;stroke-width:2.2;marker-end:url(#arrow)}.good{stroke:#059669}.fail{stroke:#dc2626}.line{stroke:#cbd5e1;stroke-width:1.4;stroke-dasharray:6 6}
+      .dot{fill:#059669}.dot2{fill:#d97706}.dot3{fill:#dc2626}
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0 0 10 4 0 8z" fill="#334155"/></marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="675"/>
+  <text class="h1" x="48" y="58">Jito Bundle Submission Lifecycle</text>
+  <text class="sub" x="48" y="84">The stack records the happy path and the failure path with the same level of evidence.</text>
+
+  <line class="line" x1="120" y1="235" x2="1080" y2="235"/>
+  <g transform="translate(70 175)"><rect class="box" width="150" height="92"/><circle class="dot2" cx="24" cy="26" r="7"/><text class="label" x="44" y="32">Signed tx</text><text class="body" x="24" y="62">Already signed</text></g>
+  <g transform="translate(255 175)"><rect class="box" width="150" height="92"/><circle class="dot2" cx="24" cy="26" r="7"/><text class="label" x="44" y="32">Verify</text><text class="body" x="24" y="62">Decode and check</text></g>
+  <g transform="translate(440 175)"><rect class="box warn" width="150" height="92"/><circle class="dot2" cx="24" cy="26" r="7"/><text class="label" x="44" y="32">Submit</text><text class="body" x="24" y="62">Send Jito bundle</text></g>
+  <g transform="translate(625 175)"><rect class="box warn" width="150" height="92"/><circle class="dot2" cx="24" cy="26" r="7"/><text class="label" x="44" y="32">Accepted</text><text class="body" x="24" y="62">Bundle id issued</text></g>
+  <g transform="translate(810 175)"><rect class="box warn" width="150" height="92"/><circle class="dot2" cx="24" cy="26" r="7"/><text class="label" x="44" y="32">Leader</text><text class="body" x="24" y="62">Forward near slot</text></g>
+  <path class="arrow" d="M220 221h30"/><path class="arrow" d="M405 221h30"/><path class="arrow" d="M590 221h30"/><path class="arrow" d="M775 221h30"/>
+
+  <g transform="translate(260 380)"><rect class="box ok" width="180" height="92"/><circle class="dot" cx="26" cy="28" r="7"/><text class="label" x="48" y="34">Processed</text><text class="body" x="26" y="65">Earliest landing signal</text></g>
+  <g transform="translate(510 380)"><rect class="box ok" width="180" height="92"/><circle class="dot" cx="26" cy="28" r="7"/><text class="label" x="48" y="34">Confirmed</text><text class="body" x="26" y="65">Cluster convergence</text></g>
+  <g transform="translate(760 380)"><rect class="box ok" width="180" height="92"/><circle class="dot" cx="26" cy="28" r="7"/><text class="label" x="48" y="34">Finalized</text><text class="body" x="26" y="65">Final commitment</text></g>
+  <path class="arrow good" d="M905 267c0 70-360 45-550 110"/><path class="arrow good" d="M440 426h65"/><path class="arrow good" d="M690 426h65"/>
+
+  <g transform="translate(995 175)"><rect class="box bad" width="150" height="92"/><circle class="dot3" cx="24" cy="26" r="7"/><text class="label" x="44" y="32">Failure</text><text class="body" x="24" y="62">Classify detail</text></g>
+  <path class="arrow fail" d="M960 221h30"/>
+
+  <rect class="box bad" x="120" y="555" width="960" height="62"/>
+  <text class="label" x="150" y="582">Failure examples captured in the report</text>
+  <text class="body" x="150" y="606">InsufficientFunds for intentional unfunded transactions; SimulationFailure / AlreadyProcessed for one unexpected live-network case.</text>
+  <path class="arrow fail" d="M1080 267c-80 168-235 255-456 288"/>
+  <text class="tiny" x="372" y="332">Lifecycle evidence comes from Jito results, Yellowstone/Geyser status, and RPC fallback checks.</text>
+</svg>
